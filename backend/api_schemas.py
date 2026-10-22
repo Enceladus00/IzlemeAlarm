@@ -1,0 +1,44 @@
+from datetime import datetime
+from decimal import Decimal
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class RuleUpdate(BaseModel):
+    is_active: bool
+    thresholds: dict[str, Any]
+
+
+class AlertStatusUpdate(BaseModel):
+    status: Literal["new", "in_review", "closed", "confirmed_suspicious"]
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class TransactionView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    transaction_id: int
+    transaction_no: str
+    amount: Decimal
+    currency: str
+    tx_time: datetime
+    country_code: str
+    channel: str
+
+
+class AlertView(BaseModel):
+    alert_id: int
+    rule_code: str
+    rule_name: str
+    customer_no: str
+    customer_name: str
+    severity: str
+    status: str
+    created_at: datetime
+    transaction_count: int
+
+
+class AlertDetail(AlertView):
+    transactions: list[TransactionView]
+    history: list[dict[str, Any]]

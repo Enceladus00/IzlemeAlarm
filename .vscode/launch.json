@@ -1,0 +1,47 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        
+        {
+            "name": "API (FastAPI)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "backend.main:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8000"
+            ],
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}\\.env",
+            "console": "internalConsole",
+            "justMyCode": true
+        },
+        {
+            "name": "UI (Streamlit)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "streamlit",
+            "args": [
+                "run",
+                "frontend/app.py"
+            ],
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}\\.env",
+            "console": "internalConsole",
+            "justMyCode": true
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Start project (API + UI)",
+            "configurations": [
+                "API (FastAPI)",
+                "UI (Streamlit)"
+            ],
+            "stopAll": true
+        }
+    ]
+}
