@@ -1,6 +1,6 @@
 # İşlem İzleme ve Alarm Sistemi
 
-Beginner-friendly transaction monitoring MVP using FastAPI, PostgreSQL,
+Transaction monitoring MVP using FastAPI, PostgreSQL,
 SQLAlchemy, Alembic, and Streamlit. It includes a synthetic demo dataset, basic
 deterministic R1–R4 evaluation, alert review screens, CSV uploads, and rule
 parameters. Login and roles are intentionally out of scope.
