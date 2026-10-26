@@ -4,10 +4,8 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.models import Account, AppUser, Customer, MonitoringRule, Transaction
+from backend.models import Account, Customer, MonitoringRule, Transaction
 
-
-SYSTEM_USERNAME = "demo-system"
 
 RULES = [
     (
@@ -37,21 +35,12 @@ RULES = [
         "R4",
         "Risky country (demo)",
         "Demo-only country match. Country codes are examples, not a real risk list.",
-        {"countries": ["TR", "IL"], "enabled": True},
+        {"countries": ["TR", "IL", "US"], "enabled": True},
     ),
 ]
 
 
 def seed_demo_data(db: Session) -> dict[str, int]:
-    user = db.scalar(select(AppUser).where(AppUser.username == SYSTEM_USERNAME))
-    if user is None:
-        user = AppUser(
-            username=SYSTEM_USERNAME,
-            password_hash="not-a-login-account",
-            role="analyst",
-        )
-        db.add(user)
-
     for code, name, description, thresholds in RULES:
         rule = db.scalar(
             select(MonitoringRule).where(MonitoringRule.rule_code == code)

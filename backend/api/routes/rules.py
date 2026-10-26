@@ -3,8 +3,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import SQLAlchemyError
 
-from backend.api.dependencies import get_detection_service
-from backend.api.dependencies import get_rule_service
+from backend.api.dependencies import (
+    get_detection_service,
+    get_rule_service,
+    require_permission,
+)
 from backend.api_schemas import RuleUpdate
 from backend.services.detection_service import DetectionService
 from backend.services.rule_service import (
@@ -12,6 +15,7 @@ from backend.services.rule_service import (
     RuleNotFound,
     RuleService,
 )
+from backend.services.auth_service import AuthenticatedUser
 
 
 router = APIRouter()
@@ -19,6 +23,7 @@ router = APIRouter()
 
 @router.get("/rules")
 def list_rules(
+    _user: AuthenticatedUser = Depends(require_permission("rule:view")),
     service: RuleService = Depends(get_rule_service),
 ) -> list[dict[str, Any]]:
     try:
@@ -31,6 +36,7 @@ def list_rules(
 def update_rule(
     rule_code: str,
     update: RuleUpdate,
+    user: AuthenticatedUser = Depends(require_permission("rule:edit")),
     service: RuleService = Depends(get_rule_service),
 ) -> dict[str, Any]:
     try:
@@ -38,6 +44,7 @@ def update_rule(
             rule_code,
             update.thresholds,
             update.is_active,
+            user.user_id,
         )
     except RuleNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -49,9 +56,10 @@ def update_rule(
 
 @router.post("/rules/evaluate")
 def run_rules(
+    user: AuthenticatedUser = Depends(require_permission("rule:edit")),
     service: DetectionService = Depends(get_detection_service),
 ) -> dict[str, int]:
     try:
-        return {"created_alerts": service.evaluate()}
+        return {"created_alerts": service.evaluate(actor_id=user.user_id)}
     except SQLAlchemyError as exc:
         raise HTTPException(status_code=503, detail="Rule evaluation failed.") from exc

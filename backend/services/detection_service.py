@@ -26,7 +26,12 @@ class DetectionService:
             )
         )
 
-    def evaluate(self) -> int:
+    def evaluate(
+        self,
+        *,
+        actor_id: int | None = None,
+        automatic: bool = False,
+    ) -> int:
         rules = self._repository.list_active_rules()
         rules_by_code = {rule.rule_code: rule for rule in rules}
         transactions = self._repository.list_active_transactions()
@@ -35,7 +40,12 @@ class DetectionService:
             rules_by_code,
             self._repository,
         )
-        return self._repository.create_alerts(evaluation.evidence, rules_by_code)
+        return self._repository.create_alerts(
+            evaluation.evidence,
+            rules_by_code,
+            actor_id=actor_id,
+            automatic=automatic,
+        )
 
 
 def evaluate_rules(db: Session) -> int:

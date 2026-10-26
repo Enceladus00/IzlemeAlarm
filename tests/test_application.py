@@ -29,6 +29,8 @@ class ApplicationTests(unittest.TestCase):
         ]
         required_paths = {
             "/health",
+            "/auth/login",
+            "/auth/me",
             "/dashboard/summary",
             "/alerts",
             "/alerts/{alert_id}",
@@ -41,6 +43,8 @@ class ApplicationTests(unittest.TestCase):
             "/demo/seed",
             "/uploads",
             "/uploads/{batch_id}",
+            "/audit-log",
+            "/users",
         }
         self.assertTrue(required_paths.issubset(paths))
         self.assertEqual(len(operations), len(set(operations)))
@@ -80,7 +84,6 @@ class ApplicationTests(unittest.TestCase):
         records: list[object] = []
         session = SimpleNamespace(
             get=lambda _model, _alert_id: alert,
-            scalar=lambda _statement: SimpleNamespace(user_id=7),
             add=records.append,
             commit=lambda: None,
         )
@@ -89,6 +92,7 @@ class ApplicationTests(unittest.TestCase):
             12,
             "in_review",
             "Reviewed account activity.",
+            actor_id=7,
         )
 
         history = next(record for record in records if isinstance(record, AlertStatusHistory))
@@ -96,6 +100,7 @@ class ApplicationTests(unittest.TestCase):
         self.assertEqual(result, {"alert_id": 12, "status": "in_review", "changed": False})
         self.assertEqual(history.old_status, "in_review")
         self.assertEqual(history.new_status, "in_review")
+        self.assertEqual(history.changed_by, 7)
         self.assertEqual(history.note, "Reviewed account activity.")
         self.assertEqual(audit.action, "alert.note_added")
 

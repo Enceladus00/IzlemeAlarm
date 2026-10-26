@@ -5,7 +5,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import SQLAlchemyError
 
-from backend.api.dependencies import get_transaction_service
+from backend.api.dependencies import get_transaction_service, require_permission
+from backend.services.auth_service import AuthenticatedUser
 from backend.services.transaction_service import (
     CustomerNotFound,
     InvalidTransactionFilters,
@@ -27,6 +28,7 @@ def list_transactions(
     max_amount: Decimal | None = Query(default=None, gt=0),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=200, ge=1, le=500),
+    _user: AuthenticatedUser = Depends(require_permission("customer:view")),
     service: TransactionService = Depends(get_transaction_service),
 ) -> dict[str, Any]:
     try:
@@ -51,6 +53,7 @@ def list_transactions(
 def customer_transactions(
     customer_no: str,
     limit: int = Query(default=200, ge=1, le=500),
+    _user: AuthenticatedUser = Depends(require_permission("customer:view")),
     service: TransactionService = Depends(get_transaction_service),
 ) -> dict[str, Any]:
     try:

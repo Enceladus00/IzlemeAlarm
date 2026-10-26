@@ -15,6 +15,17 @@ class AlertStatusUpdate(BaseModel):
     note: str | None = Field(default=None, max_length=2000)
 
 
+class UserCreate(BaseModel):
+    username: str = Field(min_length=1, max_length=50)
+    password: str = Field(min_length=1)
+    role_code: str = Field(min_length=1, max_length=20)
+
+
+class UserUpdate(BaseModel):
+    role_code: str | None = Field(default=None, min_length=1, max_length=20)
+    is_active: bool | None = None
+
+
 class TransactionView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

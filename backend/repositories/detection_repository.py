@@ -8,6 +8,7 @@ from backend.models import (
     Account,
     Alert,
     AlertTransaction,
+    AuditLog,
     MonitoringRule,
     Transaction,
 )
@@ -48,6 +49,9 @@ class SqlAlchemyDetectionRepository:
         self,
         candidates: list[DetectionEvidence],
         rules_by_code: dict[str, MonitoringRule],
+        *,
+        actor_id: int | None = None,
+        automatic: bool = False,
     ) -> int:
         created = 0
         for candidate in candidates:
@@ -77,6 +81,15 @@ class SqlAlchemyDetectionRepository:
                 for transaction in candidate.transactions
             )
             created += 1
+        if actor_id is not None:
+            self._session.add(
+                AuditLog(
+                    actor_id=actor_id,
+                    action="detection.auto_run" if automatic else "detection.run",
+                    entity_type="detection",
+                    details={"created_alerts": created, "automatic": automatic},
+                )
+            )
         try:
             self._session.commit()
         except SQLAlchemyError:

@@ -25,6 +25,10 @@ def _get_session_factory() -> sessionmaker[Session]:
     return _session_factory
 
 
+def create_independent_session() -> Session:
+    return _get_session_factory()()
+
+
 def get_db() -> Generator[Session, None, None]:
     db = _get_session_factory()()
     try:

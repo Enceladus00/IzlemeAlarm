@@ -85,38 +85,46 @@ try:
     with activity_col:
         with st.container(border=True):
             st.subheader("Latest alerts")
-            latest = api_request("GET", "/alerts", params={"limit": 8})
-            if latest["items"]:
-                frame = pd.DataFrame(latest["items"])
-                visible = frame[
-                    [
-                        "alert_id",
-                        "rule_code",
-                        "customer_name",
-                        "severity",
-                        "status",
-                        "created_at",
-                    ]
-                ].rename(
-                    columns={
-                        "alert_id": "Alert",
-                        "rule_code": "Rule",
-                        "customer_name": "Customer",
-                        "severity": "Severity",
-                        "status": "Status",
-                        "created_at": "Created",
-                    }
-                )
-                st.dataframe(visible, hide_index=True, alt="Most recently created alerts")
+            if "alert:view" in st.session_state.get("permissions", []):
+                latest = api_request("GET", "/alerts", params={"limit": 8})
+                if latest["items"]:
+                    frame = pd.DataFrame(latest["items"])
+                    visible = frame[
+                        [
+                            "alert_id",
+                            "rule_code",
+                            "customer_name",
+                            "severity",
+                            "status",
+                            "created_at",
+                        ]
+                    ].rename(
+                        columns={
+                            "alert_id": "Alert",
+                            "rule_code": "Rule",
+                            "customer_name": "Customer",
+                            "severity": "Severity",
+                            "status": "Status",
+                            "created_at": "Created",
+                        }
+                    )
+                    st.dataframe(
+                        visible,
+                        hide_index=True,
+                        alt="Most recently created alerts",
+                    )
+                else:
+                    st.info("No alerts yet. Run the rules to evaluate available transactions.")
             else:
-                st.info("No alerts yet. Run the rules to evaluate available transactions.")
+                st.info("Your account cannot view alert details.")
 
     action_col, date_col = st.columns([1, 3], vertical_alignment="center")
     with action_col:
-        if st.button("Evaluate rules now", type="primary"):
-            result = api_request("POST", "/rules/evaluate")
-            st.success(f"{result['created_alerts']} new alerts created.")
-            st.rerun()
+        if "rule:edit" in st.session_state.get("permissions", []):
+            if st.button("Evaluate rules now", type="primary"):
+                result = api_request("POST", "/rules/evaluate")
+                st.success(f"{result['created_alerts']} new alerts created.")
+                st.rerun()
     with date_col:
         st.caption(f"Reporting date: {date.today():%b %d, %Y}")
 except ApiError as error:

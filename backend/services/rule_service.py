@@ -89,12 +89,15 @@ class RuleService:
         rule_code: str,
         thresholds: dict[str, Any],
         is_active: bool,
+        actor_id: int,
     ) -> dict[str, Any]:
         rule: MonitoringRule | None = self._repository.get_rule(rule_code)
         if rule is None:
             raise RuleNotFound("Rule not found.")
         normalized_thresholds = validate_thresholds(rule.rule_code, thresholds)
-        self._repository.save_rule(rule, normalized_thresholds, is_active)
+        self._repository.save_rule(
+            rule, normalized_thresholds, is_active, actor_id
+        )
         return {
             "rule_code": rule.rule_code,
             "is_active": rule.is_active,

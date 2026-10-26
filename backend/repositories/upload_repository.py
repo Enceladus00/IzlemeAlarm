@@ -11,7 +11,6 @@ from backend.models import (
     UploadBatch,
     UploadRowError,
 )
-from backend.repositories.user_repository import SqlAlchemyUserRepository
 
 
 class SqlAlchemyUploadRepository:
@@ -28,10 +27,6 @@ class SqlAlchemyUploadRepository:
 
     def __init__(self, session: Session) -> None:
         self._session = session
-        self._users = SqlAlchemyUserRepository(session)
-
-    def system_user_id(self) -> int:
-        return self._users.get_or_create_system_user_id()
 
     def get_customer(self, customer_no: str) -> Customer | None:
         return self._session.scalar(

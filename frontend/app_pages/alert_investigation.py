@@ -11,8 +11,8 @@ page_header(
 )
 
 try:
-    rules = api_request("GET", "/rules")
-    rule_options = ["All rules", *[rule["rule_code"] for rule in rules]]
+    rule_codes = api_request("GET", "/alerts/rule-codes")
+    rule_options = ["All rules", *rule_codes]
     with st.form("alert-filters"):
         filter_cols = st.columns(5)
         status = filter_cols[0].selectbox(
@@ -120,7 +120,7 @@ try:
                 st.session_state["loaded_customer_history"] = selected_id
             if st.session_state.get("loaded_customer_history") == selected_id:
                 customer_history = api_request(
-                    "GET", f"/customers/{detail['customer_no']}/transactions"
+                    "GET", f"/alerts/{selected_id}/customer-transactions"
                 )
                 st.markdown(
                     f"**Transaction history · {customer_history['customer_name']}**"
@@ -130,32 +130,35 @@ try:
                     alt="Recent incoming and outgoing transactions for this customer",
                 )
 
-            with st.form(f"status-{selected_id}"):
-                status_options = [
-                    "new",
-                    "in_review",
-                    "closed",
-                    "confirmed_suspicious",
-                ]
-                new_status = st.selectbox(
-                    "Update status",
-                    status_options,
-                    index=status_options.index(detail["status"]),
-                )
-                note = st.text_area(
-                    "Analyst reasoning",
-                    placeholder="Record evidence, context, or why this alert is being resolved.",
-                )
-                if st.form_submit_button("Save investigation update", type="primary"):
-                    try:
-                        api_request(
-                            "PATCH",
-                            f"/alerts/{selected_id}/status",
-                            json={"status": new_status, "note": note or None},
-                        )
-                        st.success("Alert status and analyst note saved.")
-                        st.rerun()
-                    except ApiError as error:
-                        show_api_error(error)
+            if "alert:update" in st.session_state.get("permissions", []):
+                with st.form(f"status-{selected_id}"):
+                    status_options = [
+                        "new",
+                        "in_review",
+                        "closed",
+                        "confirmed_suspicious",
+                    ]
+                    new_status = st.selectbox(
+                        "Update status",
+                        status_options,
+                        index=status_options.index(detail["status"]),
+                    )
+                    note = st.text_area(
+                        "Analyst reasoning",
+                        placeholder="Record evidence, context, or why this alert is being resolved.",
+                    )
+                    if st.form_submit_button("Save investigation update", type="primary"):
+                        try:
+                            api_request(
+                                "PATCH",
+                                f"/alerts/{selected_id}/status",
+                                json={"status": new_status, "note": note or None},
+                            )
+                            st.success("Alert status and analyst note saved.")
+                            st.rerun()
+                        except ApiError as error:
+                            show_api_error(error)
+            else:
+                st.info("Your account can review alerts but cannot update their status.")
 except ApiError as error:
     show_api_error(error)

@@ -131,6 +131,7 @@ async def upload_csv(
     file: UploadFile,
     db: Session,
     detection_service: DetectionService,
+    actor_id: int,
 ) -> dict[str, Any]:
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=422, detail="Upload a .csv file.")
@@ -157,7 +158,6 @@ async def upload_csv(
         raise HTTPException(status_code=413, detail="CSV exceeds the 5000-row limit.")
 
     repository = SqlAlchemyUploadRepository(db)
-    actor_id = repository.system_user_id()
     batch = repository.create_batch(
         actor_id=actor_id,
         entity=entity,
@@ -201,7 +201,10 @@ async def upload_csv(
     try:
         repository.persist_upload(batch, accepted, errors, actor_id, entity)
         if entity == "transaction" and accepted:
-            detection_service.evaluate()
+            detection_service.evaluate(
+                actor_id=actor_id,
+                automatic=True,
+            )
     except SQLAlchemyError as exc:
         db.rollback()
         raise HTTPException(status_code=422, detail="CSV records violate database constraints.") from exc
@@ -249,12 +252,15 @@ class UploadService:
         self._session = session
         self._detection_service = detection_service
 
-    async def upload(self, entity: str, file: UploadFile) -> dict[str, Any]:
+    async def upload(
+        self, entity: str, file: UploadFile, actor_id: int
+    ) -> dict[str, Any]:
         return await upload_csv(
             entity,
             file,
             self._session,
             self._detection_service,
+            actor_id,
         )
 
     def get_batch(self, batch_id: int) -> dict[str, Any]:

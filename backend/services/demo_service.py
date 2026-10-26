@@ -12,10 +12,13 @@ class DemoService:
         self._session = session
         self._detection_service = detection_service
 
-    def seed(self) -> dict[str, Any]:
+    def seed(self, actor_id: int) -> dict[str, Any]:
         try:
             counts = seed_demo_data(self._session)
-            created = self._detection_service.evaluate()
+            created = self._detection_service.evaluate(
+                actor_id=actor_id,
+                automatic=True,
+            )
         except SQLAlchemyError:
             self._session.rollback()
             raise

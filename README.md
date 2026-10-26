@@ -3,7 +3,8 @@
 Transaction monitoring MVP using FastAPI, PostgreSQL,
 SQLAlchemy, Alembic, and Streamlit. It includes a synthetic demo dataset, basic
 deterministic R1–R4 evaluation, alert review screens, CSV uploads, and rule
-parameters. Login and roles are intentionally out of scope.
+parameters. The API uses bearer-token authentication and database-backed roles
+and permissions.
 
 For a detailed explanation of how the application is structured and how each
 feature works, see the [Project Guide](./PROJECT_GUIDE.md).
@@ -24,19 +25,38 @@ feature works, see the [Project Guide](./PROJECT_GUIDE.md).
    python -m pip install -r frontend\requirements.txt
    ```
 
-2. Copy `.env.example` to `.env` and set `DATABASE_URL` to your local
-   PostgreSQL database. Do not share or commit the local `.env` file.
+2. Copy `.env.example` to `.env`; set `DATABASE_URL` to your local PostgreSQL
+   database and `JWT_SECRET` to a long, random secret. The API refuses to start
+   without `JWT_SECRET`. Do not share or commit the local `.env` file.
 
-3. Apply the Alembic baseline once:
+3. Apply the Alembic migrations:
 
    ```powershell
    .\.venv\Scripts\alembic.exe upgrade head
    ```
 
-   For a fresh database, this creates the existing project schema. For a
-   database that already has the complete original schema, it adopts that
-   schema without recreating tables. Do not separately rerun
-   `database\V1__initial_schema.sql` against an existing schema.
+   For a fresh database, this creates the original schema and applies RBAC.
+   For an existing database with the complete original schema but no Alembic
+   revision, stamp the baseline first, then apply the RBAC migration:
+
+   ```powershell
+   .\.venv\Scripts\alembic.exe stamp 0001_existing_schema_baseline
+   .\.venv\Scripts\alembic.exe upgrade head
+   ```
+
+   Do not stamp revision `0002_rbac` unless the RBAC migration has already
+   been applied manually. Do not rerun `database\V1__initial_schema.sql`
+   against an existing schema.
+
+4. Create the first administrator:
+
+   ```powershell
+   python -m backend.scripts.create_admin
+   ```
+
+   The script prompts for username and password. It can instead read
+   `ADMIN_USERNAME` and `ADMIN_PASSWORD` from the process environment. No
+   default administrator or password is included in the repository.
 
 ## Start in VS Code
 
@@ -61,10 +81,23 @@ Use the sidebar to switch between:
 - **Rule management:** change the active state and validated thresholds for
   R1–R4.
 
-Click **Load demo data** to seed 10 synthetic customers, 10 accounts, and 20
-transactions and run the rules. Seeding is
-repeatable: it does not add the same demo records again. Import CSV data in
-dependency order: customers, accounts, then transactions.
+The demo seed endpoint is disabled by default. Set
+`ENABLE_DEMO_ENDPOINTS=true` explicitly for a development environment to show
+the UI action and enable `POST /demo/seed`. Seeding is repeatable. Import CSV
+data in dependency order: customers, accounts, then transactions.
+
+## Role-based access control
+
+The `admin` role receives all seeded permissions. The `analyst` role receives
+only `alert:view`, `alert:update`, and `dashboard:view`; alert detail includes
+its linked customer and transactions, and alert-scoped customer history stays
+limited to that alert's customer. Generic customer, account, and transaction
+browsing requires `customer:view`. The API is the authorization boundary; the
+Streamlit permission-based navigation is only a usability aid.
+
+Users authenticate at `POST /auth/login` and can inspect their role and sorted
+permissions at `GET /auth/me`. Tokens are signed with `JWT_SECRET` and expire
+after 30 minutes. The `audit:view` permission is required for `GET /audit-log`.
 
 Rule definitions used in this MVP:
 
@@ -80,7 +113,7 @@ Rule definitions used in this MVP:
 - **R4:** match a configured country list when enabled. The demo seed enables
   `TR` and `IL` only as examples, not as real-world risk classifications.
 
-The schema requires a user reference for uploads and alert-history records.
-`demo-system` is a technical database identity only; it does not provide login
-or role-based authorization. This MVP is for synthetic data and learning, not
+The original baseline may retain a legacy `demo-system` row, but request
+actions now use the authenticated user's ID for upload, rule, alert-history,
+and audit attribution. This MVP is for synthetic data and learning, not
 production risk decisions.

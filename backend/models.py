@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     CHAR,
     CheckConstraint,
+    Column,
     Date,
     DateTime,
     ForeignKey,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     Index,
     Numeric,
     String,
+    Table,
     Text,
     UniqueConstraint,
     text,
@@ -24,6 +26,45 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
     pass
+
+
+role_permission = Table(
+    "role_permission",
+    Base.metadata,
+    Column("role_id", BigInteger, ForeignKey("app_role.role_id"), primary_key=True),
+    Column(
+        "permission_id",
+        BigInteger,
+        ForeignKey("permission.permission_id"),
+        primary_key=True,
+    ),
+)
+
+
+class AppRole(Base):
+    __tablename__ = "app_role"
+
+    role_id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    role_code: Mapped[str] = mapped_column(String(20), unique=True)
+    name: Mapped[str] = mapped_column(String(50))
+    is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
+    permissions: Mapped[list["Permission"]] = relationship(
+        secondary=role_permission,
+        back_populates="roles",
+    )
+    users: Mapped[list["AppUser"]] = relationship(back_populates="role")
+
+
+class Permission(Base):
+    __tablename__ = "permission"
+
+    permission_id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    code: Mapped[str] = mapped_column(String(50), unique=True)
+    description: Mapped[str] = mapped_column(Text)
+    roles: Mapped[list[AppRole]] = relationship(
+        secondary=role_permission,
+        back_populates="permissions",
+    )
 
 
 class Customer(Base):
@@ -96,15 +137,17 @@ class Transaction(Base):
 
 class AppUser(Base):
     __tablename__ = "app_user"
+    __table_args__ = (Index("idx_app_user_role_id", "role_id"),)
 
     user_id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     username: Mapped[str] = mapped_column(String(50), unique=True)
     password_hash: Mapped[str] = mapped_column(Text)
-    role: Mapped[str] = mapped_column(String(20))
+    role_id: Mapped[int] = mapped_column(ForeignKey("app_role.role_id"))
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=text("CURRENT_TIMESTAMP")
     )
+    role: Mapped[AppRole] = relationship(back_populates="users")
 
 
 class MonitoringRule(Base):

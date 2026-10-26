@@ -5,9 +5,9 @@ start it. It follows a request from the screen, through the API and business
 logic, down to PostgreSQL, and back. It also explains the important trade-offs
 and what the current version does **not** do.
 
-> **Scope:** This is a learning/demo MVP. It uses synthetic data and simple,
-> deterministic rules. It does not provide login, roles, production fraud
-> decisions, or machine learning.
+> **Scope:** This is a learning/demo MVP. It uses bearer-token login and RBAC,
+> but still uses synthetic data and simple deterministic rules; it is not a
+> production fraud-decision system and does not use machine learning.
 
 ## Table of contents
 
@@ -27,6 +27,7 @@ and what the current version does **not** do.
 14. [Limits and deliberate omissions](#14-limits-and-deliberate-omissions)
 15. [Questions you should be able to answer](#15-questions-you-should-be-able-to-answer)
 16. [Glossary](#16-glossary)
+17. [Role-based access control](#17-role-based-access-control)
 
 ## 1. The project in one minute
 
@@ -63,28 +64,28 @@ User action in Streamlit
 
 | Path | Responsibility |
 | --- | --- |
-| `frontend/app.py` | Streamlit navigation and the shared demo-data action. |
-| `frontend/app_pages/` | Detection overview, alert investigation, transaction analysis, data management, and rule management pages. |
+| `frontend/app.py` | Streamlit login, permission-based navigation, and optional demo-data action. |
+| `frontend/app_pages/` | Detection overview, alert investigation, transaction analysis, data management, rule management, user management, and audit-log pages. |
 | `frontend/components/` | Shared page headers, metric layouts, and transaction tables. |
 | `frontend/utils/api.py` | Shared HTTP client and user-facing API errors. |
 | `backend/main.py` | FastAPI application factory and router composition. |
-| `backend/api/routes/` | Thin HTTP adapters grouped by analysis, alerts, rules, transactions, and uploads. |
+| `backend/api/routes/` | Thin HTTP adapters grouped by authentication, analysis, alerts, audit, rules, transactions, uploads, and users. |
 | `backend/api/dependencies.py` | Constructs application services from the request-scoped database session. |
 | `backend/api_schemas.py` | Pydantic request/response data shapes for a few API payloads. |
 | `backend/database.py` | Lazily creates the SQLAlchemy engine/session factory and provides a session to each request. |
 | `backend/db_url.py` | Normalizes PostgreSQL connection URLs to the installed `psycopg2` driver. |
-| `backend/models.py` | SQLAlchemy entity definitions mapped to PostgreSQL tables. |
-| `backend/services/` | Application workflows for analysis, alerts, demo seeding, detection, rules, transactions, and uploads. |
-| `backend/repositories/` | SQLAlchemy data-access implementations injected into services. |
+| `backend/models.py` | SQLAlchemy entity definitions, including users, roles, and permissions. |
+| `backend/services/` | Application workflows for authentication, audit, analysis, alerts, demo seeding, detection, rules, transactions, uploads, and users. |
+| `backend/repositories/` | SQLAlchemy data-access implementations injected into services, including identity and audit repositories. |
 | `backend/detection/` | Detection engine contracts and independent R1–R4 strategy implementations. |
 | `backend/rules.py` | Backward-compatible exports for the detection service and deduplication helper. |
 | `backend/demo.py` | Creates a small, repeatable set of synthetic data and rule defaults. |
 | `database/V1__initial_schema.sql` | Original PostgreSQL schema, constraints, indexes, triggers, and initial rule rows. |
-| `alembic.ini`, `alembic/` | Alembic configuration and the initial schema-baseline migration. |
-| `tests/test_application.py` | Fast unit checks for model mapping, threshold validation, deduplication, and URL normalization. |
+| `alembic.ini`, `alembic/` | Alembic configuration, original baseline, and RBAC migration. |
+| `tests/test_application.py`, `tests/test_rbac.py` | Model, rule, and authorization regression tests. |
 | `.vscode/launch.json` | VS Code launch buttons for the API, UI, or both together. |
 | `.env.example` | Template for local configuration. Copy this to `.env` and set your own database URL. |
-| `backend/requirements.txt` | Backend dependencies, including FastAPI, SQLAlchemy, and Alembic. |
+| `backend/requirements.txt` | Backend dependencies, including FastAPI, SQLAlchemy, Alembic, bcrypt, PyJWT, and test tools. |
 | `frontend/requirements.txt` | Streamlit and its UI/data dependencies. |
 
 FastAPI dependencies wire request-scoped repositories into services. Routers
@@ -201,9 +202,10 @@ Alert    many --- many Transaction (through alert_transaction)
 
 ### Operational and history entities
 
-- **AppUser:** exists because the original schema requires a user foreign key
-  for some actions. This MVP creates a technical `demo-system` row; it is not
-  a login account.
+- **AppUser:** stores a password hash, active flag, and required role foreign
+  key. Request-side audit attribution comes from the authenticated user.
+- **AppRole / Permission:** active roles link to permissions through
+  `role_permission`.
 - **UploadBatch:** one CSV upload, with entity type, file name, row counts, and
   uploader reference.
 - **UploadRowError:** rejected CSV row number, reason, and submitted row data.
@@ -220,7 +222,8 @@ missed:
 - Transactions reference existing sender/receiver accounts and have positive
   amounts.
 - Transaction channel and country-code formats are constrained.
-- Alert status/severity and user role values are constrained.
+- Alert status/severity values are constrained; users reference an active role
+  at authentication time.
 - Closing or confirming an alert requires a nonblank note.
 - Alert deduplication keys are unique.
 - SQL triggers reject UPDATE/DELETE on the three append-only history tables.
@@ -233,29 +236,34 @@ status/time, alerts by customer, and upload errors by batch.
 The route implementations are in `backend/main.py`; the interactive reference
 is available at `/docs` while the API is running.
 
-| Method and route | Purpose | Important behavior |
-| --- | --- | --- |
-| `GET /health` | Check database connectivity. | Runs `SELECT 1`; returns 503 when the database cannot be reached. |
-| `GET /dashboard/summary` | Return record totals, severity/rule distributions, and recent detection trends. | Uses SQL `COUNT` and `GROUP BY`; it does not load all transactions into Python. |
-| `GET /alerts` | List/filter alerts. | Supports status, severity, rule code, date range, offset, and bounded page size. |
-| `GET /alerts/{alert_id}` | Show one alert, its linked transactions, and status history. | Returns 404 if no alert has that ID. |
-| `PATCH /alerts/{alert_id}/status` | Change status or record analyst reasoning. | Allowed status values are fixed; closing/confirming requires a note; writes history and audit rows. |
-| `GET /transactions` | Filter and inspect account-to-account transfers. | Supports date, customer, direction, and amount filters; returns linked-alert indicators. |
-| `GET /customers/{customer_no}/transactions` | Show a customer's transaction history. | Includes incoming and outgoing transfers for active customer accounts. |
-| `GET /rules` | Read rule descriptions, active flags, and thresholds. | Rules are returned ordered by code. |
-| `PUT /rules/{rule_code}` | Save a rule's active flag and thresholds. | Rejects unknown/missing threshold keys and invalid values with 422. |
-| `POST /rules/evaluate` | Evaluate active rules against stored transactions. | Returns how many new deduplicated alerts were inserted. |
-| `POST /demo/seed` | Seed the demo data and evaluate it. | Repeat calls don't recreate demo transactions or duplicate existing alerts. |
-| `POST /uploads?entity=...` | Upload customer/account/transaction CSV. | Enforces CSV, UTF-8, 5 MB, 5000-row, header, and row-level validation. |
-| `GET /uploads/{batch_id}` | Retrieve one upload report. | Includes summary counts and stored row errors; returns 404 for an unknown batch. |
+| Method and route | Purpose | Access | Important behavior |
+| --- | --- | --- | --- |
+| `POST /auth/login` | Exchange username/password form for a token. | Public | Returns a 30-minute bearer token; failures use a generic response. |
+| `GET /auth/me` | Return current username, role, and sorted permissions. | Authenticated | Reloads role and permissions from the database. |
+| `GET /health` | Check database connectivity. | Public | Runs `SELECT 1`; returns 503 when the database cannot be reached. |
+| `GET /dashboard/summary` | Return record totals, severity/rule distributions, and recent detection trends. | `dashboard:view` | Uses SQL `COUNT` and `GROUP BY`. |
+| `GET /alerts` | List/filter alerts. | `alert:view` | Supports status, severity, rule code, date range, offset, and bounded page size. |
+| `GET /alerts/rule-codes` | Return alert rule-filter choices. | `alert:view` | Does not expose rule thresholds. |
+| `GET /alerts/{alert_id}` | Show one alert, linked customer, transactions, and status history. | `alert:view` | Returns only transactions linked through `alert_transaction`. |
+| `GET /alerts/{alert_id}/customer-transactions` | Load investigation history for the alert's customer. | `alert:view` | Derives customer scope from the alert ID; accepts no customer ID. |
+| `PATCH /alerts/{alert_id}/status` | Change status or record analyst reasoning. | `alert:update` | The authenticated user's ID is written to history and audit records. |
+| `GET /transactions` | Filter and inspect account-to-account transfers. | `customer:view` | Supports date, customer, direction, and amount filters. |
+| `GET /customers/{customer_no}/transactions` | Show a customer's transaction history. | `customer:view` | Generic customer history; analysts use the alert-scoped route instead. |
+| `GET /rules` | Read rule descriptions, active flags, and thresholds. | `rule:view` | Rules are returned ordered by code. |
+| `PUT /rules/{rule_code}` | Save a rule's active flag and thresholds. | `rule:edit` | Rejects invalid values with 422 and attributes the actor from the token. |
+| `POST /rules/evaluate` | Evaluate active rules against stored transactions. | `rule:edit` | Manual evaluation; automatic upload evaluation needs no extra permission. |
+| `POST /demo/seed` | Seed demo data and evaluate it. | `upload:create` + `ENABLE_DEMO_ENDPOINTS=true` | Disabled by default; repeat calls avoid duplicate demo records. |
+| `POST /uploads?entity=...` | Upload customer/account/transaction CSV. | `upload:create` | Validates CSV and attributes the batch to the authenticated user. |
+| `GET /uploads/{batch_id}` | Retrieve one upload report. | `upload:view` | Includes stored row errors; returns 404 for an unknown batch. |
+| `GET /users`, `GET /users/roles` | List users and assignable active roles. | `user:manage` | Never returns password hashes. |
+| `POST /users`, `PATCH /users/{user_id}` | Create, deactivate, or change a user's role. | `user:manage` | User records are deactivated, never deleted. |
+| `GET /audit-log` | View audit events. | `audit:view` | Returns a bounded, newest-first page. |
 
 ### Why the frontend calls the API
 
 The Streamlit UI is a client of the API, rather than a direct database client.
-That keeps SQL and business logic in one place and means API validation also
-applies when someone calls an endpoint outside the UI. At the current MVP
-stage, this is an architectural boundary, not an authentication boundary:
-there is no login or authorization.
+That keeps SQL and business logic in one place. The API requires bearer-token
+authentication and enforces permissions independently of the UI.
 
 ### Alert status transition behavior
 
@@ -419,8 +427,7 @@ The seed contains:
 - 10 TRY accounts (one per customer).
 - 20 transactions with deterministic timestamps and amounts.
 - Four rules, created if missing.
-- A technical `demo-system` record when needed for the existing user foreign
-  keys.
+- The initial schema's legacy `demo-system` row is not used as a request actor.
 
 The seed then invokes the same `evaluate_rules` service used by the explicit
 rule-evaluation endpoint. The currently seeded database produced 15 alerts
@@ -576,8 +583,9 @@ file.
 - If only some project tables exist, it stops with the names of missing tables
   instead of guessing how to repair the database.
 
-It also inserts `demo-system` if absent, because the current database schema
-requires user IDs in upload/history records.
+The baseline also inserts the legacy `demo-system` row if absent. The RBAC
+migration maps existing string roles to `app_role`; new request actions use
+the authenticated user's ID.
 
 This initial migration is deliberately a **baseline**, not a sequence of
 fine-grained transformations from the old SQL schema. It cannot be safely
@@ -599,7 +607,8 @@ driver. `normalize_database_url` explicitly changes PostgreSQL URLs to
 `DATABASE_URL` tells SQLAlchemy and Alembic which database to use.
 `API_BASE_URL` tells Streamlit where FastAPI is running. `.env` is a local
 secret-bearing file and should not be committed or pasted into support
-messages. `.env.example` contains a placeholder, not working credentials.
+messages. Set `JWT_SECRET` to a long random value; the API fails at startup if
+it is missing. `.env.example` contains placeholders, not working credentials.
 
 ### Main dependencies
 
@@ -617,10 +626,10 @@ There is no ORM or database connection from Streamlit directly to PostgreSQL.
 
 ## 13. Tests and how to verify changes
 
-Run the unit tests from the repository root:
+Run the test suite from the repository root:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
 They check:
@@ -630,21 +639,27 @@ They check:
 - Invalid or ambiguous values are rejected.
 - Alert candidate deduplication is stable and includes R2 account scope.
 - PostgreSQL URL formats are normalized to the installed driver.
+- RBAC route permissions, login audit events, identity attribution, and
+  alert-scoped customer history are checked without truncating append-only
+  audit/history tables.
 
 These are **unit checks**, not proof of every database-backed workflow. A
 fuller manual smoke-test sequence with a local PostgreSQL database is:
 
 1. `alembic upgrade head`
-2. Start the API and UI.
-3. Call `/health`.
-4. Click the demo seed button twice. The second result should report zero
+2. Create an administrator with `python -m backend.scripts.create_admin` and
+   sign in through Streamlit. Set `ENABLE_DEMO_ENDPOINTS=true` before startup
+   if the smoke test should exercise demo seeding.
+3. Start the API and UI.
+4. Call `/health`.
+5. Click the demo seed button twice. The second result should report zero
    newly created alerts.
-5. Check `/dashboard/summary`, `/alerts`, and `/rules`.
-6. Open an alert and inspect its related transactions.
-7. Try closing an alert without a note; expect HTTP 422.
-8. Close it with a note; verify the status history changes.
-9. Save a valid rule setting; fetch `/rules` to see the persisted value.
-10. Upload a valid CSV and one with deliberately invalid rows; inspect the
+6. Check `/dashboard/summary`, `/alerts`, and `/rules`.
+7. Open an alert and inspect its related transactions.
+8. Try closing an alert without a note; expect HTTP 422.
+9. Close it with a note; verify the status history changes.
+10. Save a valid rule setting; fetch `/rules` to see the persisted value.
+11. Upload a valid CSV and one with deliberately invalid rows; inspect the
     counts and `/uploads/{batch_id}` report.
 
 Use the API docs at `/docs` to inspect exact request shapes and responses. For
@@ -655,10 +670,11 @@ logs; that sequence tells you which layer is responsible.
 
 These are important when explaining the project honestly:
 
-- **No login, roles, or authorization.** Anyone able to reach the API can call
-  its routes. The screens are not access control.
-- **`demo-system` is not authentication.** The existing schema requires user
-  foreign keys; the technical record only satisfies those references.
+- **The demo seed endpoint is disabled by default.** Set
+  `ENABLE_DEMO_ENDPOINTS=true` only in a development environment; the endpoint
+  still requires `upload:create`.
+- **RBAC is not a production identity platform.** There is no MFA, SSO,
+  password recovery, or deployment secrets-management plan.
 - **Rules are basic deterministic examples.** They are not validated financial
   policy and may create false positives/negatives.
 - **R2 has a simple window interpretation.** It totals all matching inbound and
@@ -674,8 +690,8 @@ These are important when explaining the project honestly:
   but no malware scan, asynchronous queue, or large-file streaming import.
 - **No production operations plan.** Backups, monitoring, secrets management,
   database least privilege, retention, and deployment are not implemented.
-- **No committed default admin or password.** There is also no login flow to
-  create one.
+- **No committed default admin or password.** Create the first admin with
+  `python -m backend.scripts.create_admin`.
 
 ## 15. Questions you should be able to answer
 
@@ -741,3 +757,66 @@ training and inference are not present today.
 - **Append-only history:** records are added, not updated/deleted through
   ordinary database operations; PostgreSQL triggers reject modifications.
 - **ASGI:** the Python server interface used by FastAPI and Uvicorn.
+
+## 17. Role-based access control
+
+### Roles and permissions
+
+Alembic revision `0002_rbac` creates the role, permission, and
+`role_permission` tables and migrates `app_user.role` to `app_user.role_id`.
+The seeded `admin` role has every permission. The seeded `analyst` role has
+only `alert:view`, `alert:update`, and `dashboard:view`. If the old schema
+contains auditor users, the migration preserves them as a legacy `auditor`
+role with no seeded permissions. No user rows are deleted.
+
+The permission codes are `user:manage`, `role:manage`, `upload:create`,
+`upload:view`, `rule:view`, `rule:edit`, `customer:view`, `alert:view`,
+`alert:update`, `dashboard:view`, and `audit:view`. User creation, deactivation,
+and role assignment require `user:manage`; `role:manage` is reserved for role
+administration and does not currently expose a role-editing endpoint.
+
+### Authentication and route enforcement
+
+`POST /auth/login` accepts the OAuth2 password form and returns a 30-minute
+HS256 bearer token. `GET /auth/me` reloads the user, role, and permissions from
+the database and returns the username, role code, and sorted permissions.
+Every API request using a protected route reloads the same authorization data;
+inactive users and roles are rejected. The only public routes are `POST
+/auth/login` and `GET /health`.
+
+Alerts and linked alert customer history require `alert:view`; the
+alert-history route derives its customer from the alert ID and does not accept
+a client-supplied customer ID. Generic transaction/customer history browsing
+requires `customer:view`, which analysts do not have. Other route permissions
+follow their action: rule reads use `rule:view`, edits/manual evaluation use
+`rule:edit`, uploads use `upload:create`, upload reports use `upload:view`,
+dashboard uses `dashboard:view`, and audit-log reads use `audit:view`.
+Automatic detection after an upload is attributed to the uploading user and
+does not require `rule:edit`. `ACCESS_DENIED`, `LOGIN_SUCCESS`, and
+`LOGIN_FAILED` audit entries are committed in an independent transaction;
+failed-login details contain the username but never the password.
+
+The Streamlit app stores the token and permission list in session state,
+attaches the bearer token to API calls, and builds navigation from permissions.
+This improves the UI but is not a substitute for API enforcement.
+
+### First administrator and existing databases
+
+Set `JWT_SECRET` in `.env` to a long random value; the API fails at startup if
+it is missing. After applying migrations, run
+`python -m backend.scripts.create_admin`. The script reads
+`ADMIN_USERNAME`/`ADMIN_PASSWORD` from the environment or prompts interactively.
+It stores only a bcrypt hash; no default credentials are committed.
+
+For a manually initialized database containing the complete original schema
+but no Alembic revision, adopt the original baseline and apply RBAC:
+
+```powershell
+.\.venv\Scripts\alembic.exe stamp 0001_existing_schema_baseline
+.\.venv\Scripts\alembic.exe upgrade head
+```
+
+Do not edit or stamp revision `0001` as the RBAC revision. The RBAC revision
+is `0002_rbac`. The demo seed endpoint is disabled unless
+`ENABLE_DEMO_ENDPOINTS=true` is explicitly set, and still requires
+`upload:create`.

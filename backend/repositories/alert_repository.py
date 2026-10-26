@@ -11,16 +11,15 @@ from backend.models import (
     AlertStatusHistory,
     AlertTransaction,
     AuditLog,
+    Customer,
     MonitoringRule,
     Transaction,
 )
-from backend.repositories.user_repository import SqlAlchemyUserRepository
 
 
 class SqlAlchemyAlertRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
-        self._users = SqlAlchemyUserRepository(session)
 
     def list_alerts(
         self,
@@ -70,6 +69,13 @@ class SqlAlchemyAlertRepository:
         )
         return total, alerts
 
+    def list_rule_codes(self) -> list[str]:
+        return list(
+            self._session.scalars(
+                select(MonitoringRule.rule_code).order_by(MonitoringRule.rule_code)
+            )
+        )
+
     def get_alert(self, alert_id: int) -> Alert | None:
         return self._session.scalar(
             select(Alert)
@@ -97,13 +103,13 @@ class SqlAlchemyAlertRepository:
         alert: Alert,
         new_status: str,
         note: str | None,
+        actor_id: int,
     ) -> None:
-        user_id = self._users.get_or_create_system_user_id()
         old_status = alert.status
         self._session.add(
             AlertStatusHistory(
                 alert_id=alert.alert_id,
-                changed_by=user_id,
+                changed_by=actor_id,
                 old_status=old_status,
                 new_status=new_status,
                 note=note,
@@ -111,7 +117,7 @@ class SqlAlchemyAlertRepository:
         )
         self._session.add(
             AuditLog(
-                actor_id=user_id,
+                actor_id=actor_id,
                 action=(
                     "alert.note_added" if old_status == new_status
                     else "alert.status_changed"
@@ -132,6 +138,37 @@ class SqlAlchemyAlertRepository:
             self._session.rollback()
             raise
 
+    def customer_transactions_for_alert(
+        self, alert_id: int, limit: int
+    ) -> tuple[Customer, list[Transaction]] | None:
+        alert = self._session.scalar(
+            select(Alert)
+            .where(Alert.alert_id == alert_id)
+            .options(joinedload(Alert.customer))
+        )
+        if alert is None:
+            return None
+        account_ids = select(Account.account_id).where(
+            Account.customer_id == alert.customer_id,
+            Account.is_active,
+        )
+        query = (
+            select(Transaction)
+            .where(
+                Transaction.is_active,
+                (Transaction.sender_account_id.in_(account_ids))
+                | (Transaction.receiver_account_id.in_(account_ids)),
+            )
+            .options(
+                joinedload(Transaction.sender_account).joinedload(Account.customer),
+                joinedload(Transaction.receiver_account).joinedload(Account.customer),
+            )
+            .order_by(Transaction.tx_time.desc(), Transaction.transaction_id.desc())
+            .limit(limit)
+        )
+        transactions = list(self._session.scalars(query).unique())
+        return alert.customer, transactions
+
 
 def alert_summary(alert: Alert) -> dict[str, Any]:
     return {
@@ -140,6 +177,10 @@ def alert_summary(alert: Alert) -> dict[str, Any]:
         "rule_name": alert.rule.name,
         "customer_no": alert.customer.customer_no,
         "customer_name": alert.customer.full_name,
+        "customer": {
+            "customer_no": alert.customer.customer_no,
+            "customer_name": alert.customer.full_name,
+        },
         "severity": alert.severity,
         "status": alert.status,
         "created_at": alert.created_at,

@@ -45,6 +45,9 @@ class AlertService:
         )
         return {"total": total, "items": [alert_summary(alert) for alert in alerts]}
 
+    def list_rule_codes(self) -> list[str]:
+        return self._repository.list_rule_codes()
+
     def get_alert(self, alert_id: int) -> dict[str, Any]:
         alert = self._repository.get_alert(alert_id)
         if alert is None:
@@ -66,7 +69,7 @@ class AlertService:
         return result
 
     def update_status(
-        self, alert_id: int, status: str, note: str | None
+        self, alert_id: int, status: str, note: str | None, actor_id: int
     ) -> dict[str, Any]:
         alert: Alert | None = self._repository.get_alert_status(alert_id)
         if alert is None:
@@ -80,5 +83,23 @@ class AlertService:
         changed = previous != status
         if not changed and not normalized_note:
             return {"alert_id": alert_id, "status": previous, "changed": False}
-        self._repository.save_status_event(alert, status, normalized_note)
+        self._repository.save_status_event(
+            alert, status, normalized_note, actor_id
+        )
         return {"alert_id": alert_id, "status": alert.status, "changed": changed}
+
+    def customer_transactions_for_alert(
+        self, alert_id: int, limit: int
+    ) -> dict[str, Any]:
+        result = self._repository.customer_transactions_for_alert(alert_id, limit)
+        if result is None:
+            raise AlertNotFound("Alert not found.")
+        customer, transactions = result
+        return {
+            "customer_no": customer.customer_no,
+            "customer_name": customer.full_name,
+            "items": [
+                TransactionService.transaction_view(transaction)
+                for transaction in transactions
+            ],
+        }
