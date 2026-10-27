@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
@@ -18,6 +19,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    Uuid,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -152,12 +154,20 @@ class AppUser(Base):
 
 class MonitoringRule(Base):
     __tablename__ = "monitoring_rule"
+    __table_args__ = (
+        CheckConstraint(
+            "weight >= 0 AND weight <= 1", name="ck_monitoring_rule_weight_range"
+        ),
+    )
 
     rule_id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     rule_code: Mapped[str] = mapped_column(String(10), unique=True)
     name: Mapped[str] = mapped_column(String(100))
     description: Mapped[str] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
+    weight: Mapped[Decimal] = mapped_column(
+        Numeric(4, 3), nullable=False, server_default=text("1.000")
+    )
     thresholds: Mapped[dict[str, Any]] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb")
     )
@@ -212,6 +222,10 @@ class UploadRowError(Base):
 class Alert(Base):
     __tablename__ = "alert"
     __table_args__ = (
+        CheckConstraint(
+            "score IS NULL OR (score >= 0 AND score <= 1)",
+            name="ck_alert_score_range",
+        ),
         Index("idx_alert_status_created_at", "status", text("created_at DESC")),
         Index("idx_alert_customer_id", "customer_id"),
     )
@@ -220,6 +234,7 @@ class Alert(Base):
     rule_id: Mapped[int] = mapped_column(ForeignKey("monitoring_rule.rule_id"))
     customer_id: Mapped[int] = mapped_column(ForeignKey("customer.customer_id"))
     severity: Mapped[str] = mapped_column(String(10))
+    score: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
     status: Mapped[str] = mapped_column(
         String(30), server_default=text("'new'")
     )
@@ -248,6 +263,77 @@ class AlertTransaction(Base):
     )
     alert: Mapped[Alert] = relationship(back_populates="transactions")
     transaction: Mapped[Transaction] = relationship()
+
+
+class DetectionRun(Base):
+    __tablename__ = "detection_run"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'completed', 'failed')",
+            name="ck_detection_run_status",
+        ),
+    )
+
+    run_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    as_of: Mapped[datetime] = mapped_column(DateTime)
+    status: Mapped[str] = mapped_column(String(20))
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP")
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    summary: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+
+
+class RuleResult(Base):
+    __tablename__ = "rule_result"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "rule_id", "customer_id", name="uq_rule_result_run_rule_customer"
+        ),
+        CheckConstraint(
+            "parameter_status IN ('UNSET', 'PROVISIONAL', 'APPROVED')",
+            name="ck_rule_result_parameter_status",
+        ),
+        CheckConstraint(
+            "result_status IN ('evaluated', 'skipped_unset', 'skipped_customer_type')",
+            name="ck_rule_result_result_status",
+        ),
+        CheckConstraint(
+            "score IS NULL OR (score >= 0 AND score <= 1)",
+            name="ck_rule_result_score_range",
+        ),
+        CheckConstraint(
+            "weight_snapshot >= 0 AND weight_snapshot <= 1",
+            name="ck_rule_result_weight_range",
+        ),
+    )
+
+    result_id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("detection_run.run_id"))
+    rule_id: Mapped[int] = mapped_column(ForeignKey("monitoring_rule.rule_id"))
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customer.customer_id"))
+    customer_type: Mapped[str | None] = mapped_column(String(10))
+    weight_snapshot: Mapped[Decimal] = mapped_column(Numeric(4, 3))
+    parameter_snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    parameter_status: Mapped[str] = mapped_column(String(20))
+    result_status: Mapped[str] = mapped_column(String(30))
+    raw_x: Mapped[Decimal | None] = mapped_column(Numeric(18, 6))
+    score: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    alert_mode: Mapped[str] = mapped_column(String(20))
+    step_trace: Mapped[list[dict[str, Any]]] = mapped_column(JSONB)
+
+
+class RuleResultTransaction(Base):
+    __tablename__ = "rule_result_transaction"
+
+    result_id: Mapped[int] = mapped_column(
+        ForeignKey("rule_result.result_id"), primary_key=True
+    )
+    transaction_id: Mapped[int] = mapped_column(
+        ForeignKey("transaction.transaction_id"), primary_key=True
+    )
 
 
 class AlertStatusHistory(Base):

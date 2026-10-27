@@ -45,6 +45,7 @@ def update_rule(
             update.thresholds,
             update.is_active,
             user.user_id,
+            update.weight,
         )
     except RuleNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

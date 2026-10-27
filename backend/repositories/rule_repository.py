@@ -31,11 +31,15 @@ class SqlAlchemyRuleRepository:
         rule: MonitoringRule,
         thresholds: dict[str, Any],
         is_active: bool,
+        weight: Any,
         actor_id: int,
     ) -> None:
         old_thresholds = dict(rule.thresholds)
+        old_weight = rule.weight
+        old_is_active = rule.is_active
         rule.thresholds = thresholds
         rule.is_active = is_active
+        rule.weight = weight
         rule.updated_by = actor_id
         rule.updated_at = datetime.now()
         self._session.add(
@@ -55,6 +59,10 @@ class SqlAlchemyRuleRepository:
                 details={
                     "old_thresholds": old_thresholds,
                     "new_thresholds": thresholds,
+                    "old_weight": str(old_weight),
+                    "new_weight": str(weight),
+                    "old_is_active": old_is_active,
+                    "new_is_active": is_active,
                     "is_active": is_active,
                 },
             )

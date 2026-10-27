@@ -1,51 +1,57 @@
+import logging
+from datetime import datetime
+from typing import Any
+from uuid import uuid4
+
 from sqlalchemy.orm import Session
 
-from backend.detection.base import RuleStrategy
 from backend.detection.engine import DetectionEngine
-from backend.detection.rules.r1_threshold import NearThresholdStrategy
-from backend.detection.rules.r2_in_out import RapidOutflowStrategy
-from backend.detection.rules.r3_anomaly import UnusualAmountStrategy
-from backend.detection.rules.r4_country import RiskyCountryStrategy
 from backend.repositories.detection_repository import SqlAlchemyDetectionRepository
+
+
+logger = logging.getLogger(__name__)
 
 
 class DetectionService:
     def __init__(
         self,
         repository: SqlAlchemyDetectionRepository,
-        strategies: tuple[RuleStrategy, ...] | None = None,
+        engine: DetectionEngine | None = None,
     ) -> None:
         self._repository = repository
-        self._engine = DetectionEngine(
-            strategies
-            or (
-                NearThresholdStrategy(),
-                RapidOutflowStrategy(),
-                UnusualAmountStrategy(),
-                RiskyCountryStrategy(),
-            )
-        )
+        self._engine = engine or DetectionEngine()
 
     def evaluate(
         self,
         *,
         actor_id: int | None = None,
         automatic: bool = False,
+        as_of: datetime | None = None,
+        customer_ids: set[int] | None = None,
+        rule_overrides: dict[str, dict[str, Any]] | None = None,
     ) -> int:
-        rules = self._repository.list_active_rules()
+        run_as_of = as_of or datetime.now()
+        rules = self._repository.list_rules()
         rules_by_code = {rule.rule_code: rule for rule in rules}
+        customers = self._repository.list_active_customers(customer_ids)
         transactions = self._repository.list_active_transactions()
         evaluation = self._engine.evaluate(
+            customers,
             transactions,
             rules_by_code,
-            self._repository,
+            as_of=run_as_of,
+            rule_overrides=rule_overrides,
         )
-        return self._repository.create_alerts(
-            evaluation.evidence,
+        created = self._repository.persist_run(
+            uuid4(),
+            run_as_of,
+            evaluation,
             rules_by_code,
             actor_id=actor_id,
             automatic=automatic,
         )
+        logger.info("Detection run completed: %s", evaluation.summary)
+        return created
 
 
 def evaluate_rules(db: Session) -> int:

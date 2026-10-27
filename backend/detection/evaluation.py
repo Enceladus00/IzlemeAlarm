@@ -1,12 +1,9 @@
 from dataclasses import dataclass
 
-from backend.detection.evidence import DetectionEvidence
+from backend.detection.metadata import RuleResultEvidence
 
 
 @dataclass(frozen=True)
 class DetectionEvaluation:
-    evidence: list[DetectionEvidence]
-
-    @property
-    def alert_count(self) -> int:
-        return len(self.evidence)
+    results: list[RuleResultEvidence]
+    summary: dict[str, object]

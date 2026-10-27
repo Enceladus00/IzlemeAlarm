@@ -134,8 +134,13 @@ else:
                     result = api_request("POST", "/demo/seed")
                     st.success(
                         f"Demo ready: {result['customers']} customers, "
-                        f"{result['transactions']} transactions; "
+                        f"{result['transactions']} new scenario transactions; "
                         f"{result['created_alerts']} new alerts."
+                    )
+                    st.caption(
+                        "Demo-only PROVISIONAL thresholds are run for synthetic "
+                        "customers; saved rule settings remain unchanged. R02 is "
+                        "stored as an INFO signal, not an alert."
                     )
                 except ApiError as error:
                     show_api_error(error)

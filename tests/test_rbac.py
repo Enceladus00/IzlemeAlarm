@@ -95,10 +95,10 @@ class FakeAlertService:
         self.status_actor_id: int | None = None
 
     def list_rule_codes(self) -> list[str]:
-        return ["R1", "R2"]
+        return ["R01", "R02"]
 
     def list_alerts(self, **_kwargs: Any) -> dict[str, Any]:
-        return {"total": 1, "items": [{"alert_id": 1, "rule_code": "R1"}]}
+        return {"total": 1, "items": [{"alert_id": 1, "rule_code": "R01"}]}
 
     def get_alert(self, _alert_id: int) -> dict[str, Any]:
         return {
@@ -123,9 +123,9 @@ class FakeAlertService:
 
 class FakeRuleService:
     def list_rules(self):
-        return [{"rule_code": "R1"}]
+        return [{"rule_code": "R01"}]
 
-    def update_rule(self, rule_code, thresholds, is_active, actor_id):
+    def update_rule(self, rule_code, thresholds, is_active, actor_id, weight=None):
         return {"rule_code": rule_code, "actor_id": actor_id}
 
 
@@ -252,7 +252,7 @@ def test_auth_me_returns_sorted_permissions(api_client):
     ("method", "path", "permission", "kwargs"),
     [
         ("get", "/rules", "rule:view", {}),
-        ("put", "/rules/R1", "rule:edit", {"json": {"thresholds": {}, "is_active": True}}),
+        ("put", "/rules/R01", "rule:edit", {"json": {"thresholds": {}, "is_active": True}}),
         ("post", "/rules/evaluate", "rule:edit", {}),
         (
             "post",
@@ -298,7 +298,7 @@ def test_analyst_is_denied_admin_only_routes_and_audited(
     [
         ("get", "/rules", {}, 200),
         ("get", "/dashboard/summary", {}, 200),
-        ("put", "/rules/R1", {"json": {"thresholds": {}, "is_active": True}}, 200),
+        ("put", "/rules/R01", {"json": {"thresholds": {}, "is_active": True}}, 200),
         ("post", "/rules/evaluate", {}, 200),
         ("get", "/uploads/1", {}, 200),
         ("get", "/transactions", {}, 200),

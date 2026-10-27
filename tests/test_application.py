@@ -1,20 +1,26 @@
 import unittest
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import patch
 from types import SimpleNamespace
 
 from sqlalchemy.orm import configure_mappers
 
 from backend.db_url import normalize_database_url
 from backend.main import app
-from backend.models import AlertStatusHistory, AuditLog, Base
+from backend.models import AlertStatusHistory, AuditLog, Base, RuleChangeLog
 from backend.repositories.alert_repository import SqlAlchemyAlertRepository
 from backend.repositories.transaction_repository import (
     SqlAlchemyTransactionRepository,
     TransactionFilters,
 )
+from backend.repositories.rule_repository import SqlAlchemyRuleRepository
 from backend.rules import _dedup
 from backend.services.alert_service import AlertService
+from backend.services.demo_service import DemoService
 from backend.services.rule_service import (
     InvalidRuleThresholds,
+    RuleService,
     validate_thresholds,
 )
 
@@ -109,49 +115,203 @@ class ApplicationTests(unittest.TestCase):
         self.assertIn("customer", Base.metadata.tables)
         self.assertIn("transaction", Base.metadata.tables)
         self.assertIn("alert_status_history", Base.metadata.tables)
+        self.assertIn("detection_run", Base.metadata.tables)
+        self.assertIn("rule_result", Base.metadata.tables)
+        self.assertIn("rule_result_transaction", Base.metadata.tables)
 
-    def test_demo_rule_thresholds_are_valid(self) -> None:
-        self.assertEqual(
-            validate_thresholds(
-                "R1",
-                {
-                    "amount_limit": 10000,
-                    "proximity_percent": 10,
-                    "transaction_count": 2,
-                    "window_minutes": 60,
+    def test_rule_thresholds_are_validated_by_customer_type(self) -> None:
+        normalized = validate_thresholds(
+            "R01",
+            {
+                "BIREYSEL": {
+                    "status": "PROVISIONAL",
+                    "values": {
+                        "limits": {"TRY": "10000"},
+                        "x_esik": 2,
+                        "x_kesin": 5,
+                        "minimum_income_ratio": "0.01",
+                        "income_currency": "TRY",
+                    },
                 },
-            )["amount_limit"],
-            10000,
+                "KURUMSAL": {"status": "UNSET", "values": {}},
+            },
         )
         self.assertEqual(
-            validate_thresholds(
-                "R4", {"countries": ["TR", "IL"], "enabled": True}
-            )["countries"],
-            ["TR", "IL"],
+            normalized["BIREYSEL"]["values"]["limits"]["TRY"],
+            "10000",
         )
+        self.assertEqual(normalized["KURUMSAL"]["status"], "UNSET")
+
+    def test_r03_thresholds_accept_currency_map_and_report_invalid_fields(self) -> None:
+        correct_shape = {
+            customer_type: {
+                "status": "PROVISIONAL",
+                "values": {
+                    "limits": {"USD": 50000.00},
+                    "x_esik": 3,
+                    "x_kesin": 5,
+                    "cash_channels": ["atm", "branch"],
+                },
+            }
+            for customer_type in ("BIREYSEL", "KURUMSAL")
+        }
+        normalized = validate_thresholds("R03", correct_shape)
+        self.assertEqual(
+            normalized["BIREYSEL"]["values"]["limits"]["USD"], "50000.0"
+        )
+
+        invalid_shape = {
+            **correct_shape,
+            "BIREYSEL": {
+                "status": "PROVISIONAL",
+                "values": {
+                    "limits": 50000.00,
+                    "x_esik": 3,
+                    "x_kesin": 5,
+                },
+            },
+        }
+        with self.assertRaises(InvalidRuleThresholds) as raised:
+            validate_thresholds("R03", invalid_shape)
+        self.assertIn("R03", str(raised.exception))
+        self.assertIn("limits", str(raised.exception))
+        self.assertIn("cash_channels", str(raised.exception))
 
     def test_rule_thresholds_reject_unsafe_or_ambiguous_values(self) -> None:
         invalid = [
-            ("R1", {"amount_limit": float("inf"), "proximity_percent": 10,
-                    "transaction_count": 2, "window_minutes": 60}),
-            ("R2", {"outflow_ratio": 1.1, "window_minutes": 60}),
-            ("R3", {"average_multiplier": 3, "minimum_history_count": 5.5}),
-            ("R4", {"countries": ["Turkey"], "enabled": True}),
-            ("R1", {"amount_limit": 10000}),
+            (
+                "R01",
+                {
+                    "BIREYSEL": {
+                        "status": "APPROVED",
+                        "values": {
+                            "limits": {"TRY": "100"},
+                            "x_esik": 5,
+                            "x_kesin": 3,
+                            "minimum_income_ratio": "0.1",
+                            "income_currency": "TRY",
+                        },
+                    },
+                    "KURUMSAL": {"status": "UNSET", "values": {}},
+                },
+            ),
+            (
+                "R02",
+                {
+                    "BIREYSEL": {
+                        "status": "APPROVED",
+                        "values": {"limits": {"TRY": float("inf")}},
+                    },
+                    "KURUMSAL": {"status": "UNSET", "values": {}},
+                },
+            ),
+            (
+                "R03",
+                {
+                    "BIREYSEL": {
+                        "status": "PROVISIONAL",
+                        "values": {
+                            "limits": {"TRY": "100"},
+                            "x_esik": 1,
+                            "x_kesin": 2,
+                            "cash_channels": ["other"],
+                        },
+                    },
+                    "KURUMSAL": {"status": "UNSET", "values": {}},
+                },
+            ),
+            ("R01", {"BIREYSEL": {"status": "UNSET", "values": {}}}),
         ]
         for rule_code, thresholds in invalid:
             with self.subTest(rule_code=rule_code, thresholds=thresholds):
                 with self.assertRaises(InvalidRuleThresholds):
                     validate_thresholds(rule_code, thresholds)
 
+    def test_rule_activation_rejects_unset_parameters(self) -> None:
+        class FakeRuleRepository:
+            def get_rule(self, rule_code):
+                return SimpleNamespace(
+                    rule_code=rule_code,
+                    thresholds={
+                        "BIREYSEL": {"status": "UNSET", "values": {}},
+                        "KURUMSAL": {"status": "UNSET", "values": {}},
+                    },
+                    weight=Decimal("0.450"),
+                    is_active=False,
+                )
+
+        with self.assertRaises(InvalidRuleThresholds):
+            RuleService(FakeRuleRepository()).update_rule(
+                "R02",
+                {
+                    "BIREYSEL": {"status": "UNSET", "values": {}},
+                    "KURUMSAL": {"status": "UNSET", "values": {}},
+                },
+                True,
+                actor_id=7,
+            )
+
+    def test_weight_and_activation_changes_are_audited(self) -> None:
+        records: list[object] = []
+        session = SimpleNamespace(add=records.append, commit=lambda: None)
+        rule = SimpleNamespace(
+            rule_id=2,
+            rule_code="R02",
+            thresholds={"old": True},
+            is_active=False,
+            weight=Decimal("0.450"),
+            updated_by=None,
+            updated_at=None,
+        )
+        SqlAlchemyRuleRepository(session).save_rule(
+            rule,
+            {"new": True},
+            True,
+            Decimal("0.600"),
+            actor_id=7,
+        )
+        change = next(row for row in records if isinstance(row, RuleChangeLog))
+        audit = next(row for row in records if isinstance(row, AuditLog))
+        self.assertEqual(change.old_thresholds, {"old": True})
+        self.assertEqual(change.new_thresholds, {"new": True})
+        self.assertEqual(audit.details["old_weight"], "0.450")
+        self.assertEqual(audit.details["new_weight"], "0.600")
+        self.assertFalse(audit.details["old_is_active"])
+        self.assertTrue(audit.details["new_is_active"])
+
+    def test_demo_runs_provisional_overrides_only_for_synthetic_customers(self) -> None:
+        class FakeDetectionService:
+            def evaluate(self, **kwargs):
+                self.kwargs = kwargs
+                return 2
+
+        detection = FakeDetectionService()
+        service = DemoService(SimpleNamespace(), detection)
+        with patch(
+            "backend.services.demo_service.seed_demo_data",
+            return_value={
+                "customers": 10,
+                "accounts": 10,
+                "transactions": 6,
+                "rules": 3,
+                "demo_customer_ids": [11, 12, 13],
+            },
+        ):
+            result = service.seed(actor_id=7)
+
+        self.assertEqual(detection.kwargs["customer_ids"], {11, 12, 13})
+        self.assertEqual(set(detection.kwargs["rule_overrides"]), {"R01", "R02", "R03"})
+        self.assertTrue(result["demo_only_parameters"])
+        self.assertEqual(result["created_alerts"], 2)
+
     def test_deduplication_key_is_stable_and_scoped(self) -> None:
         transactions = [
             SimpleNamespace(transaction_id=7),
             SimpleNamespace(transaction_id=3),
         ]
-        key = _dedup("R2", transactions, scope_id=12)
-        self.assertEqual(key, _dedup("R2", transactions[::-1], scope_id=12))
-        self.assertNotEqual(key, _dedup("R2", transactions, scope_id=13))
+        key = _dedup("R02", transactions, scope_id=12)
+        self.assertEqual(key, _dedup("R02", transactions[::-1], scope_id=12))
+        self.assertNotEqual(key, _dedup("R02", transactions, scope_id=13))
 
     def test_database_urls_use_the_installed_postgres_driver(self) -> None:
         self.assertEqual(

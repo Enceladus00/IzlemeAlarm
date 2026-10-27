@@ -1,47 +1,86 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.detection.registry import load_rule_registry
+from backend.detection.parameters import validate_rule_parameters
 from backend.models import Account, Customer, MonitoringRule, Transaction
 
 
-RULES = [
-    (
-        "R1",
-        "Repeated near-limit transactions",
-        "At least two same-currency customer transactions in the near-limit range within the configured window.",
-        {
-            "amount_limit": 10000,
-            "proximity_percent": 10,
-            "transaction_count": 2,
-            "window_minutes": 60,
+NEW_RULE_WEIGHTS = {"R01": Decimal("1.000"), "R02": Decimal("0.450"), "R03": Decimal("1.000")}
+UNSET_THRESHOLDS = {
+    "BIREYSEL": {"status": "UNSET", "values": {}},
+    "KURUMSAL": {"status": "UNSET", "values": {}},
+}
+DEMO_RULE_OVERRIDES = {
+    "R01": {
+        "BIREYSEL": {
+            "status": "PROVISIONAL",
+            "values": {
+                "limits": {"TRY": "10000"},
+                "x_esik": 1,
+                "x_kesin": 3,
+                "minimum_income_ratio": "0.01",
+                "income_currency": "TRY",
+            },
         },
-    ),
-    (
-        "R2",
-        "Rapid in-and-out transfers",
-        "Outgoing transfers are at least the configured fraction of incoming transfers within one rolling window.",
-        {"outflow_ratio": 0.8, "window_minutes": 60},
-    ),
-    (
-        "R3",
-        "Unusual transaction amount",
-        "Outgoing amount exceeds the multiplier times the average of the five preceding customer transactions.",
-        {"average_multiplier": 3, "minimum_history_count": 5},
-    ),
-    (
-        "R4",
-        "Risky country (demo)",
-        "Demo-only country match. Country codes are examples, not a real risk list.",
-        {"countries": ["TR", "IL", "US"], "enabled": True},
-    ),
-]
+        "KURUMSAL": {
+            "status": "PROVISIONAL",
+            "values": {
+                "limits": {"TRY": "10000"},
+                "x_esik": 1,
+                "x_kesin": 3,
+                "minimum_income_ratio": "0.01",
+                "income_currency": "TRY",
+            },
+        },
+    },
+    "R02": {
+        "BIREYSEL": {
+            "status": "PROVISIONAL",
+            "values": {"limits": {"TRY": "15000"}},
+        },
+        "KURUMSAL": {
+            "status": "PROVISIONAL",
+            "values": {"limits": {"TRY": "15000"}},
+        },
+    },
+    "R03": {
+        "BIREYSEL": {
+            "status": "PROVISIONAL",
+            "values": {
+                "limits": {"TRY": "1000"},
+                "x_esik": 1,
+                "x_kesin": 3,
+                "cash_channels": ["atm", "branch"],
+            },
+        },
+        "KURUMSAL": {
+            "status": "PROVISIONAL",
+            "values": {
+                "limits": {"TRY": "1000"},
+                "x_esik": 1,
+                "x_kesin": 3,
+                "cash_channels": ["atm", "branch"],
+            },
+        },
+    },
+}
 
 
-def seed_demo_data(db: Session) -> dict[str, int]:
-    for code, name, description, thresholds in RULES:
+def seed_demo_data(
+    db: Session, *, as_of: datetime | None = None
+) -> dict[str, Any]:
+    run_as_of = as_of or datetime.now()
+    registry = load_rule_registry()
+    for code, weight in NEW_RULE_WEIGHTS.items():
+        definition = registry[code].definition
+        thresholds = validate_rule_parameters(
+            code, definition.parameter_model, UNSET_THRESHOLDS
+        )
         rule = db.scalar(
             select(MonitoringRule).where(MonitoringRule.rule_code == code)
         )
@@ -49,17 +88,13 @@ def seed_demo_data(db: Session) -> dict[str, int]:
             db.add(
                 MonitoringRule(
                     rule_code=code,
-                    name=name,
-                    description=description,
+                    name=definition.name,
+                    description=definition.description,
                     thresholds=thresholds,
-                    is_active=True,
+                    is_active=False,
+                    weight=weight,
                 )
             )
-        elif code == "R4" and rule.thresholds == {
-            "countries": [],
-            "enabled": False,
-        }:
-            rule.thresholds = {**thresholds, "enabled": True}
     db.flush()
 
     customers = []
@@ -71,13 +106,14 @@ def seed_demo_data(db: Session) -> dict[str, int]:
             customer = Customer(
                 customer_no=f"DEMO-{index:03d}",
                 full_name=f"Demo Customer {index:02d}",
-                customer_type="person",
+                customer_type="BIREYSEL" if index <= 3 else "KURUMSAL",
                 occupation="Demo",
                 monthly_income=Decimal("50000.00"),
                 risk_level="low",
             )
             db.add(customer)
             db.flush()
+        customer.customer_type = "BIREYSEL" if index <= 3 else "KURUMSAL"
         customers.append(customer)
 
     accounts = []
@@ -97,55 +133,39 @@ def seed_demo_data(db: Session) -> dict[str, int]:
             db.flush()
         accounts.append(account)
 
-    existing = db.scalar(
-        select(Transaction.transaction_id).where(
-            Transaction.transaction_no.like("DEMO-TX-%")
-        ).limit(1)
+    demo_transactions = (
+        ("DEMO-R01-001", 1, 4, "9500", 70, "internet"),
+        ("DEMO-R01-002", 1, 5, "9800", 40, "internet"),
+        ("DEMO-R02-001", 2, 1, "16000", 30, "mobile"),
+        ("DEMO-R03-001", 4, 3, "500", 25, "atm"),
+        ("DEMO-R03-002", 5, 3, "600", 20, "branch"),
+        ("DEMO-R03-003", 6, 3, "700", 15, "atm"),
     )
-    if not existing:
-        base = datetime(2026, 1, 1, 9, 0)
-        specs: list[tuple[int, int, str, str, int, str]] = []
-        for minute, amount in enumerate([100, 120, 90, 110, 80]):
-            specs.append((2, 3, str(amount), "TR", minute, "mobile"))
-        specs.append((2, 3, "400", "TR", 10, "mobile"))
-        specs.extend(
-            [
-                (1, 4, "9500", "TR", 20, "internet"),
-                (1, 5, "9600", "TR", 45, "internet"),
-                (6, 7, "1000", "US", 30, "mobile"),
-                (7, 8, "850", "US", 50, "mobile"),
-                (4, 9, "250", "IL", 60, "branch"),
-                (5, 9, "300", "US", 75, "atm"),
-                (6, 1, "150", "US", 90, "mobile"),
-                (8, 2, "200", "US", 105, "internet"),
-                (9, 3, "180", "US", 120, "branch"),
-                (10, 4, "220", "US", 135, "atm"),
-                (3, 5, "175", "US", 150, "mobile"),
-                (7, 6, "125", "US", 165, "internet"),
-                (8, 10, "275", "US", 180, "branch"),
-                (9, 1, "325", "US", 195, "atm"),
-            ]
+    for number, sender, receiver, amount, minutes_ago, channel in demo_transactions:
+        exists = db.scalar(
+            select(Transaction.transaction_id).where(
+                Transaction.transaction_no == number
+            )
         )
-        for index, (sender, receiver, amount, country, minute, channel) in enumerate(
-            specs, 1
-        ):
+        if exists is None:
             db.add(
                 Transaction(
-                    transaction_no=f"DEMO-TX-{index:03d}",
+                    transaction_no=number,
                     sender_account_id=accounts[sender - 1].account_id,
                     receiver_account_id=accounts[receiver - 1].account_id,
                     amount=Decimal(amount),
                     currency="TRY",
-                    tx_time=base + timedelta(minutes=minute),
+                    tx_time=run_as_of - timedelta(minutes=minutes_ago),
                     channel=channel,
-                    country_code=country,
+                    country_code="TR",
                 )
             )
 
-    db.commit()
+    db.flush()
     return {
         "customers": 10,
         "accounts": 10,
-        "transactions": 20,
-        "rules": len(RULES),
+        "transactions": len(demo_transactions),
+        "rules": len(NEW_RULE_WEIGHTS),
+        "demo_customer_ids": [customer.customer_id for customer in customers[:3]],
     }

@@ -182,6 +182,7 @@ def alert_summary(alert: Alert) -> dict[str, Any]:
             "customer_name": alert.customer.full_name,
         },
         "severity": alert.severity,
+        "score": alert.score,
         "status": alert.status,
         "created_at": alert.created_at,
         "transaction_count": len(alert.transactions),

@@ -1,8 +1,9 @@
-import re
 from decimal import Decimal
 from typing import Any
 
 from backend.models import MonitoringRule
+from backend.detection.parameters import validate_rule_parameters
+from backend.detection.registry import load_rule_registry
 from backend.repositories.rule_repository import SqlAlchemyRuleRepository
 
 
@@ -15,57 +16,17 @@ class InvalidRuleThresholds(ValueError):
 
 
 def validate_thresholds(rule_code: str, values: dict[str, Any]) -> dict[str, Any]:
-    schemas: dict[str, set[str]] = {
-        "R1": {"amount_limit", "proximity_percent", "transaction_count", "window_minutes"},
-        "R2": {"outflow_ratio", "window_minutes"},
-        "R3": {"average_multiplier", "minimum_history_count"},
-        "R4": {"countries", "enabled"},
-    }
-    if rule_code not in schemas or set(values) != schemas[rule_code]:
-        raise InvalidRuleThresholds("Invalid rule threshold fields.")
-
-    def decimal_value(name: str) -> Decimal:
-        result = Decimal(str(values[name]))
-        if not result.is_finite():
-            raise ValueError
-        return result
-
-    def integer_value(name: str) -> int:
-        result = decimal_value(name)
-        if result != result.to_integral_value():
-            raise ValueError
-        return int(result)
-
     try:
-        if rule_code == "R1":
-            if not (0 < decimal_value("proximity_percent") < 100):
-                raise ValueError
-            if decimal_value("amount_limit") <= 0:
-                raise ValueError
-            if integer_value("transaction_count") < 2 or integer_value("window_minutes") < 1:
-                raise ValueError
-        elif rule_code == "R2":
-            if not (0 < decimal_value("outflow_ratio") <= 1):
-                raise ValueError
-            if integer_value("window_minutes") < 1:
-                raise ValueError
-        elif rule_code == "R3":
-            if decimal_value("average_multiplier") <= 0:
-                raise ValueError
-            if integer_value("minimum_history_count") < 1:
-                raise ValueError
-        else:
-            if not isinstance(values["enabled"], bool):
-                raise ValueError
-            if not isinstance(values["countries"], list) or any(
-                not isinstance(country, str)
-                or not re.fullmatch(r"[A-Z]{2}", country)
-                for country in values["countries"]
-            ):
-                raise ValueError
+        strategy = load_rule_registry().get(rule_code)
+        if strategy is None:
+            raise ValueError("No implementation is registered for this rule.")
+        return validate_rule_parameters(
+            rule_code, strategy.definition.parameter_model, values
+        )
     except (TypeError, ValueError, OverflowError) as exc:
-        raise InvalidRuleThresholds("Threshold values are out of range.") from exc
-    return values
+        raise InvalidRuleThresholds(
+            f"Invalid {rule_code} parameter values: {exc}"
+        ) from exc
 
 
 class RuleService:
@@ -73,13 +34,35 @@ class RuleService:
         self._repository = repository
 
     def list_rules(self) -> list[dict[str, Any]]:
+        registry = load_rule_registry()
         return [
             {
                 "rule_code": rule.rule_code,
-                "name": rule.name,
-                "description": rule.description,
+                "name": registry[rule.rule_code].definition.name
+                if rule.rule_code in registry
+                else rule.name,
+                "description": registry[rule.rule_code].definition.description
+                if rule.rule_code in registry
+                else rule.description,
                 "is_active": rule.is_active,
+                "weight": rule.weight,
                 "thresholds": rule.thresholds,
+                "metadata": {
+                    "steps": list(registry[rule.rule_code].definition.steps),
+                    "alert_mode": registry[rule.rule_code].definition.alert_mode,
+                    "parameters": [
+                        {
+                            "name": item.name,
+                            "type": item.type,
+                            "unit": item.unit,
+                            "meaning": item.meaning,
+                            "required": item.required,
+                        }
+                        for item in registry[rule.rule_code].definition.parameters
+                    ],
+                }
+                if rule.rule_code in registry
+                else None,
             }
             for rule in self._repository.list_rules()
         ]
@@ -90,16 +73,37 @@ class RuleService:
         thresholds: dict[str, Any],
         is_active: bool,
         actor_id: int,
+        weight: Decimal | None = None,
     ) -> dict[str, Any]:
         rule: MonitoringRule | None = self._repository.get_rule(rule_code)
         if rule is None:
             raise RuleNotFound("Rule not found.")
         normalized_thresholds = validate_thresholds(rule.rule_code, thresholds)
+        if is_active and any(
+            values["status"] == "UNSET"
+            for values in normalized_thresholds.values()
+        ):
+            raise InvalidRuleThresholds(
+                "A rule cannot be activated while any customer type is UNSET."
+            )
+        try:
+            normalized_weight = (
+                rule.weight if weight is None else Decimal(str(weight))
+            )
+        except (TypeError, ValueError, ArithmeticError) as exc:
+            raise InvalidRuleThresholds("Rule weight must be between 0 and 1.") from exc
+        if (
+            not normalized_weight.is_finite()
+            or normalized_weight < 0
+            or normalized_weight > 1
+        ):
+            raise InvalidRuleThresholds("Rule weight must be between 0 and 1.")
         self._repository.save_rule(
-            rule, normalized_thresholds, is_active, actor_id
+            rule, normalized_thresholds, is_active, normalized_weight, actor_id
         )
         return {
             "rule_code": rule.rule_code,
             "is_active": rule.is_active,
+            "weight": rule.weight,
             "thresholds": rule.thresholds,
         }
