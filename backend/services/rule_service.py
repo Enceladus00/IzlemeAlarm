@@ -60,6 +60,13 @@ class RuleService:
                         }
                         for item in registry[rule.rule_code].definition.parameters
                     ],
+                    "analyst_review_notes": list(
+                        registry[rule.rule_code].definition.analyst_review_notes
+                    ),
+                    "feasibility": registry[rule.rule_code].definition.feasibility,
+                    "feasibility_reason": registry[
+                        rule.rule_code
+                    ].definition.feasibility_reason,
                 }
                 if rule.rule_code in registry
                 else None,
@@ -79,12 +86,12 @@ class RuleService:
         if rule is None:
             raise RuleNotFound("Rule not found.")
         normalized_thresholds = validate_thresholds(rule.rule_code, thresholds)
-        if is_active and any(
+        if is_active and all(
             values["status"] == "UNSET"
             for values in normalized_thresholds.values()
         ):
             raise InvalidRuleThresholds(
-                "A rule cannot be activated while any customer type is UNSET."
+                "A rule cannot be activated until at least one customer type is configured."
             )
         try:
             normalized_weight = (

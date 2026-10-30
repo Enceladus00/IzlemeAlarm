@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, time
 from decimal import Decimal
 from typing import Any
 
@@ -16,18 +16,24 @@ from backend.models import Customer, Transaction
 class LargeSingleTransactionRule(RuleStrategy):
     definition = RuleDefinition(
         code="R02",
-        name="Büyük tek işlem - Limiti aşan işlem (büyüklük sinyali)",
-        description="Müşteri tipi ve para birimi limitini aşan tek işlemi INFO sinyali olarak kaydeder.",
+        name="Büyük tek işlem - Limiti aşan işlem",
+        description="Müşteri tipi ve para birimi limitini aşan işlemleri analist uyarısı olarak kaydeder.",
         steps=(
             "Müşteri tipine ve para birimine göre limiti L seç.",
             "Tutar >= L ise s = 1, değilse s = 0.",
-            "INFO olarak kaydet, skoru birleşik riske gönder.",
+            "Eşik üstü işlemleri kanıt olarak bağla ve analist uyarısı oluştur.",
         ),
-        alert_mode="SIGNAL_ONLY",
+        alert_mode="ALERT",
         parameter_model=R02Values,
         parameters=(
             ParameterSpec("limits", "map[currency, decimal]", "currency", "Limit L per customer type and currency.", True),
         ),
+        analyst_review_notes=(
+            "The limit is institution-owned and should remain PROVISIONAL until an analyst approves it. A qualifying amount now creates an analyst alert; review the operational impact after deployment.",
+            "Daily deduplication consolidates same-day R02 results into one alert, accumulates evidence, and keeps the highest score. An analyst should confirm whether distinct same-day episodes should instead create separate alerts.",
+        ),
+        feasibility="HIGH",
+        feasibility_reason="Uses available transaction, account-ownership, currency, and customer-type fields with a directly configurable amount limit.",
     )
 
     def evaluate_raw(
@@ -39,8 +45,9 @@ class LargeSingleTransactionRule(RuleStrategy):
         as_of: datetime,
     ) -> list[RawRuleResult]:
         grouped: dict[int, list[Transaction]] = defaultdict(list)
+        day_start = datetime.combine(as_of.date(), time.min)
         for transaction in transactions:
-            if transaction.tx_time >= as_of:
+            if not day_start <= transaction.tx_time < as_of:
                 continue
             customer_ids = {
                 transaction.sender_account.customer_id,
@@ -73,7 +80,11 @@ class LargeSingleTransactionRule(RuleStrategy):
             )
             raw_x = selected[0].amount if selected else Decimal("0")
             limit = selected[1] if selected else None
-            evidence = [selected[0]] if selected and selected[0].amount >= limit else []
+            evidence = [
+                transaction
+                for transaction, transaction_limit in qualifying
+                if transaction.amount >= transaction_limit
+            ]
             trace = [
                 {
                     "step": 1,
@@ -84,6 +95,7 @@ class LargeSingleTransactionRule(RuleStrategy):
                             currency: str(value) for currency, value in limits.items()
                         },
                         "transactions_considered": len(qualifying),
+                        "run_date": as_of.date().isoformat(),
                         "unlisted_currency_transaction_count": ignored_currency_count,
                     },
                 },
@@ -95,6 +107,7 @@ class LargeSingleTransactionRule(RuleStrategy):
                         "amount": str(raw_x),
                         "limit": str(limit) if limit is not None else None,
                         "threshold_met": bool(limit is not None and raw_x >= limit),
+                        "qualifying_transaction_count": len(evidence),
                     },
                 },
                 {

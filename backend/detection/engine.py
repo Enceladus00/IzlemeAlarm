@@ -1,10 +1,11 @@
 import logging
 from datetime import datetime
 from decimal import Decimal
+from time import perf_counter
 from typing import Any
 
 from backend.detection.evaluation import DetectionEvaluation
-from backend.detection.metadata import RuleResultEvidence
+from backend.detection.metadata import DetectionContext, RuleResultEvidence
 from backend.detection.parameters import (
     CUSTOMER_TYPES,
     parameter_set_for,
@@ -27,6 +28,7 @@ class DetectionEngine:
         *,
         as_of: datetime,
         rule_overrides: dict[str, dict[str, Any]] | None = None,
+        context: DetectionContext | None = None,
     ) -> DetectionEvaluation:
         registry = load_rule_registry()
         overrides = rule_overrides or {}
@@ -57,6 +59,8 @@ class DetectionEngine:
         summary: dict[str, object] = {
             "as_of": as_of.isoformat(),
             "customer_count": len(customers),
+            "transaction_count": len(transactions),
+            "rule_count": len(active_rules),
             "demo_only": bool(overrides),
             "unknown_customer_type_count": sum(
                 customer.customer_type not in CUSTOMER_TYPES for customer in customers
@@ -66,6 +70,7 @@ class DetectionEngine:
         rule_summaries: dict[str, dict[str, object]] = {}
 
         for rule_code in sorted(active_rules):
+            rule_started = perf_counter()
             rule = active_rules[rule_code]
             strategy = registry[rule_code]
             definition = strategy.definition
@@ -175,12 +180,21 @@ class DetectionEngine:
                     assert isinstance(provisional_types, list)
                     provisional_types.append(customer_type)
 
-                raw_results = strategy.evaluate_raw(
-                    type_customers,
-                    transactions,
-                    {customer_type: parameter_set},
-                    as_of=as_of,
-                )
+                if rule_code == "R15":
+                    raw_results = strategy.evaluate_raw(
+                        type_customers,
+                        transactions,
+                        {customer_type: parameter_set},
+                        as_of=as_of,
+                        context=context,
+                    )
+                else:
+                    raw_results = strategy.evaluate_raw(
+                        type_customers,
+                        transactions,
+                        {customer_type: parameter_set},
+                        as_of=as_of,
+                    )
                 raw_by_customer = {item.customer_id: item for item in raw_results}
                 expected_ids = {customer.customer_id for customer in type_customers}
                 if set(raw_by_customer) != expected_ids or len(raw_results) != len(raw_by_customer):
@@ -189,13 +203,18 @@ class DetectionEngine:
                     )
                 for customer in type_customers:
                     raw = raw_by_customer[customer.customer_id]
-                    score = calculate_score(
-                        raw.raw_x,
-                        x_esik=raw.x_esik,
-                        x_kesin=raw.x_kesin,
-                        binary_limit=raw.binary_limit,
-                        force_zero=raw.force_zero,
-                    ) if raw.x_esik is not None or raw.binary_limit is not None else Decimal("0")
+                    if raw.score_override is not None:
+                        score = raw.score_override
+                    elif raw.x_esik is not None or raw.binary_limit is not None:
+                        score = calculate_score(
+                            raw.raw_x,
+                            x_esik=raw.x_esik,
+                            x_kesin=raw.x_kesin,
+                            binary_limit=raw.binary_limit,
+                            force_zero=raw.force_zero,
+                        )
+                    else:
+                        score = Decimal("0")
                     trace = [dict(step) for step in raw.step_trace]
                     for step in trace:
                         if step["status"] == "pending_shared_scoring":
@@ -235,8 +254,11 @@ class DetectionEngine:
                     )
                     if definition.alert_mode == "SIGNAL_ONLY" and score > 0:
                         rule_summary["signals"] = int(rule_summary["signals"]) + 1
-                    elif score >= Decimal("0.5") and raw.transactions:
+                    elif score >= Decimal("0.5"):
                         rule_summary["alerts"] = int(rule_summary["alerts"]) + 1
+            rule_summary["elapsed_ms"] = round(
+                (perf_counter() - rule_started) * 1000, 3
+            )
 
         summary["rules"] = rule_summaries
         return DetectionEvaluation(results=results, summary=summary)

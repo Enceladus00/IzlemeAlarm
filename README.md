@@ -1,10 +1,10 @@
 # İşlem İzleme ve Alarm Sistemi
 
 Transaction monitoring MVP using FastAPI, PostgreSQL,
-SQLAlchemy, Alembic, and Streamlit. It includes a synthetic demo dataset, basic
-deterministic R1–R4 evaluation, alert review screens, CSV uploads, and rule
-parameters. The API uses bearer-token authentication and database-backed roles
-and permissions.
+SQLAlchemy, Alembic, and Streamlit. It includes a synthetic demo dataset,
+configurable deterministic R01–R15 detection rules, alert review screens, CSV
+uploads, and guided rule parameters. The API uses bearer-token authentication
+and database-backed roles and permissions.
 
 For a detailed explanation of how the application is structured and how each
 feature works, see the [Project Guide](./PROJECT_GUIDE.md).
@@ -35,7 +35,8 @@ feature works, see the [Project Guide](./PROJECT_GUIDE.md).
    .\.venv\Scripts\alembic.exe upgrade head
    ```
 
-   For a fresh database, this creates the original schema and applies RBAC.
+   For a fresh database, this creates the original schema, applies RBAC and
+   the detection framework, then seeds the inactive R04–R15 rule rows.
    For an existing database with the complete original schema but no Alembic
    revision, stamp the baseline first, then apply the RBAC migration:
 
@@ -79,12 +80,21 @@ Use the sidebar to switch between:
 - **Data management:** import UTF-8 CSV files for customers, accounts, or
   transactions; view row-level rejection reports and download templates.
 - **Rule management:** change the active state and validated thresholds for
-  R1–R4.
+  R01–R15. Each rule shows its implementation feasibility and analyst review
+  notes; the new rules are initially inactive and unconfigured.
 
 The demo seed endpoint is disabled by default. Set
 `ENABLE_DEMO_ENDPOINTS=true` explicitly for a development environment to show
-the UI action and enable `POST /demo/seed`. Seeding is repeatable. Import CSV
-data in dependency order: customers, accounts, then transactions.
+the UI action and enable `POST /demo/seed`. The repeatable seed creates 24
+synthetic customers, 24 accounts, and scenarios for all 15 rules. Its response
+shows each designed customer/account, expected and observed signal, evidence,
+and per-rule runtime. Open **Operations → Demo lab** to browse the persisted
+customer, account, and transaction rows and the latest run; demo evaluation is
+isolated from non-demo transactions.
+By default, synthetic provisional parameters are used without changing saved
+settings. Enable **Use saved active rules and thresholds** to see how the
+fixture behaves with the analyst's current configuration. Import CSV data in
+dependency order: customers, accounts, then transactions.
 
 ## Role-based access control
 
@@ -99,19 +109,17 @@ Users authenticate at `POST /auth/login` and can inspect their role and sorted
 permissions at `GET /auth/me`. Tokens are signed with `JWT_SECRET` and expire
 after 30 minutes. The `audit:view` permission is required for `GET /audit-log`.
 
-Rule definitions used in this MVP:
+The active detection engine supports 15 independent rules: R01 near-limit
+activity, R02 large transactions, R03 repeated cash deposits, R04 income-volume
+mismatch, R05 unusual amounts, R06 velocity increase, R07 dormant-account
+activity, R08 new-account activity, R09 cash intensity, R10 pass-through,
+R11 fan-in, R12 fan-out, R13 layering chains, R14 cycles/ping-pong, and R15
+confirmed-suspicious contacts. The new rules are inactive with `UNSET`
+parameters until configured and approved. Their guided fields, feasibility
+ratings, and analyst-review assumptions are available in Rule Management.
 
-- **R1:** group a customer's outgoing transactions by currency; flag at least
-  the configured number of amounts in the near-limit range, inclusive at 90%
-  of the limit and exclusive at the limit, within the configured window.
-- **R2:** for an account and currency, compare incoming and outgoing totals in
-  the same rolling window; flag when the outgoing/incoming ratio meets the
-  configured threshold.
-- **R3:** compare an outgoing amount with the configured multiple of the
-  average of the customer's preceding outgoing transactions in the same
-  currency; the current transaction is excluded.
-- **R4:** match a configured country list when enabled. The demo seed enables
-  `TR` and `IL` only as examples, not as real-world risk classifications.
+The transaction-analysis screen also retains legacy R1–R4 indicators; those
+are separate from the active R01–R15 detection and alert pipeline.
 
 The original baseline may retain a legacy `demo-system` row, but request
 actions now use the authenticated user's ID for upload, rule, alert-history,

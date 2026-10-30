@@ -5,15 +5,16 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, aliased, joinedload, selectinload
 
-from backend.detection.evidence import deduplication_key
+from backend.detection.evidence import alert_severity, daily_deduplication_key
 from backend.detection.evaluation import DetectionEvaluation
 from backend.detection.metadata import RuleResultEvidence
 from backend.models import (
     Account,
     Alert,
     AlertTransaction,
+    AlertStatusHistory,
     AuditLog,
     Customer,
     DetectionRun,
@@ -39,6 +40,7 @@ class SqlAlchemyDetectionRepository:
         self, customer_ids: set[int] | None = None
     ) -> list[Customer]:
         statement = select(Customer).where(Customer.is_active)
+        statement = statement.options(selectinload(Customer.accounts))
         if customer_ids is not None:
             if not customer_ids:
                 return []
@@ -47,11 +49,52 @@ class SqlAlchemyDetectionRepository:
             self._session.scalars(statement.order_by(Customer.customer_id))
         )
 
-    def list_active_transactions(self) -> list[Transaction]:
+    def list_customers_with_history_status(self, status: str) -> set[int]:
+        return set(
+            self._session.scalars(
+                select(Alert.customer_id)
+                .join(AlertStatusHistory, AlertStatusHistory.alert_id == Alert.alert_id)
+                .where(AlertStatusHistory.new_status == status)
+                .distinct()
+            )
+        )
+
+    def list_account_ids_for_customers(self, customer_ids: set[int]) -> set[int]:
+        if not customer_ids:
+            return set()
+        return set(
+            self._session.scalars(
+                select(Account.account_id).where(
+                    Account.customer_id.in_(customer_ids),
+                    Account.is_active,
+                )
+            )
+        )
+
+    def list_active_transactions(
+        self, customer_ids: set[int] | None = None
+    ) -> list[Transaction]:
+        statement = select(Transaction).where(Transaction.is_active)
+        if customer_ids is not None:
+            if not customer_ids:
+                return []
+            sender = aliased(Account)
+            receiver = aliased(Account)
+            statement = (
+                statement.join(
+                    sender, Transaction.sender_account_id == sender.account_id
+                )
+                .join(
+                    receiver, Transaction.receiver_account_id == receiver.account_id
+                )
+                .where(
+                    sender.customer_id.in_(customer_ids),
+                    receiver.customer_id.in_(customer_ids),
+                )
+            )
         return list(
             self._session.scalars(
-                select(Transaction)
-                .where(Transaction.is_active)
+                statement
                 .options(
                     joinedload(Transaction.sender_account).joinedload(Account.customer),
                     joinedload(Transaction.receiver_account).joinedload(Account.customer),
@@ -109,32 +152,33 @@ class SqlAlchemyDetectionRepository:
 
         alert_values = []
         transaction_ids_by_key: dict[str, list[int]] = {}
+        scores_by_key: dict[str, Decimal] = {}
         for result, _row in result_pairs:
             if (
                 result.alert_mode != "ALERT"
                 or result.result_status != "evaluated"
                 or result.score is None
                 or result.score < Decimal("0.5")
-                or not result.transactions
             ):
                 continue
-            key = deduplication_key(
+            key = daily_deduplication_key(
                 result.rule_code,
-                result.transactions,
-                customer_id=result.customer_id,
+                result.customer_id,
+                as_of.date(),
             )
             alert_values.append(
                 {
                     "rule_id": rules_by_code[result.rule_code].rule_id,
                     "customer_id": result.customer_id,
-                    "severity": "medium",
+                    "severity": alert_severity(result.score),
                     "score": result.score,
                     "deduplication_key": key,
                 }
             )
-            transaction_ids_by_key[key] = [
+            scores_by_key[key] = result.score
+            transaction_ids_by_key[key] = list(dict.fromkeys(
                 transaction.transaction_id for transaction in result.transactions
-            ]
+            ))
         created_alerts = []
         if alert_values:
             created_alerts = self._session.execute(
@@ -143,12 +187,28 @@ class SqlAlchemyDetectionRepository:
                 .on_conflict_do_nothing(index_elements=[Alert.deduplication_key])
                 .returning(Alert.alert_id, Alert.deduplication_key)
             ).all()
+        alert_ids_by_key = {
+            key: alert_id for alert_id, key in created_alerts
+        }
+        if transaction_ids_by_key:
+            existing_alerts = self._session.scalars(
+                select(Alert).where(
+                    Alert.deduplication_key.in_(transaction_ids_by_key)
+                )
+            ).all()
+            for alert in existing_alerts:
+                key = alert.deduplication_key
+                alert_ids_by_key[key] = alert.alert_id
+                score = scores_by_key[key]
+                if alert.score is None or alert.score < score:
+                    alert.score = score
+                    alert.severity = alert_severity(score)
         alert_transaction_values = [
             {
                 "alert_id": alert_id,
                 "transaction_id": transaction_id,
             }
-            for alert_id, key in created_alerts
+            for key, alert_id in alert_ids_by_key.items()
             for transaction_id in transaction_ids_by_key[key]
         ]
         if alert_transaction_values:

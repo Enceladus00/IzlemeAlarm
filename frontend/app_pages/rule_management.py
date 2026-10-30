@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -29,10 +30,10 @@ def _currency_inputs(
     *,
     editable: bool,
 ) -> dict[str, float] | None:
-    st.markdown("**Transaction limits by currency**")
+    st.markdown("**Reference amounts by currency**")
     st.caption(
-        "Enter one currency code and its limit per row. Leave unused rows empty. "
-        "Currencies without a limit are ignored; no currency conversion is applied."
+        "Enter one currency code and its configured reference amount per row. "
+        "Leave unused rows empty; no currency conversion is applied."
     )
     existing = [
         (currency, float(amount))
@@ -56,7 +57,7 @@ def _currency_inputs(
             disabled=not editable,
         ).strip().upper()
         amount = amount_column.number_input(
-            "Limit amount" if row_index == 0 else f"Limit amount {row_index + 1}",
+            "Reference amount" if row_index == 0 else f"Reference amount {row_index + 1}",
             min_value=0.0,
             value=amount_default,
             step=100.0,
@@ -80,13 +81,13 @@ def _currency_inputs(
             st.error(f"Currency {currency} is listed more than once.")
             invalid = True
         elif amount is None or amount <= 0:
-            st.error(f"Limit for {currency} must be greater than zero.")
+            st.error(f"Reference amount for {currency} must be greater than zero.")
             invalid = True
         else:
             limits[currency] = amount
 
     if not limits and not invalid:
-        st.error("Add at least one currency and its limit before saving.")
+        st.error("Add at least one currency and reference amount before saving.")
         invalid = True
     return None if invalid else limits
 
@@ -95,55 +96,110 @@ def _parameter_inputs(
     rule_code: str,
     customer_type: str,
     values: dict[str, Any],
+    parameters: list[dict[str, Any]],
     *,
     editable: bool,
 ) -> dict[str, Any] | None:
-    limits = _currency_inputs(
-        rule_code,
-        customer_type,
-        values.get("limits", {}),
-        editable=editable,
-    )
-    result: dict[str, Any] = {"limits": limits or {}}
-    invalid = limits is None
-    if rule_code in {"R01", "R03"}:
+    parameter_names = {parameter["name"] for parameter in parameters}
+    result: dict[str, Any] = {}
+    invalid = False
+    if "limits" in parameter_names:
+        limits = _currency_inputs(
+            rule_code,
+            customer_type,
+            values.get("limits", {}),
+            editable=editable,
+        )
+        result["limits"] = limits or {}
+        invalid = limits is None
+
+    if "window_days" in parameter_names:
+        window_days_default = values.get("window_days", 7)
+        result["window_days"] = st.number_input(
+            "Lookback window (calendar days)",
+            min_value=1,
+            value=int(window_days_default),
+            step=1,
+            key=f"{rule_code}-{customer_type}-window-days",
+            help="The window includes the run date and the preceding configured calendar days.",
+            disabled=not editable,
+        )
+
+    if {"x_esik", "x_kesin"} <= parameter_names:
         first_column, second_column = st.columns(2)
+        parameter_by_name = {
+            parameter["name"]: parameter for parameter in parameters
+        }
+        integer_anchors = (
+            parameter_by_name["x_esik"]["type"] == "integer"
+            and parameter_by_name["x_kesin"]["type"] == "integer"
+        )
         x_esik_default = values.get("x_esik")
         x_kesin_default = values.get("x_kesin")
         result["x_esik"] = first_column.number_input(
-            "Starting count (x_esik)",
-            min_value=0,
+            f"Score starting point (x_esik, {parameter_by_name['x_esik']['unit']})",
+            min_value=0 if integer_anchors else 0.0,
             value=(
                 int(Decimal(str(x_esik_default)))
+                if x_esik_default is not None and integer_anchors
+                else float(Decimal(str(x_esik_default)))
                 if x_esik_default is not None
                 else None
             ),
-            step=1,
+            step=1 if integer_anchors else 0.1,
+            format=None if integer_anchors else "%.4f",
             key=f"{rule_code}-{customer_type}-x-esik",
-            help="At this count, the rule score is 0.5.",
+            help=parameter_by_name["x_esik"]["meaning"],
             disabled=not editable,
         )
         result["x_kesin"] = second_column.number_input(
-            "High-confidence count (x_kesin)",
-            min_value=1,
+            f"High-confidence point (x_kesin, {parameter_by_name['x_kesin']['unit']})",
+            min_value=1 if integer_anchors else 0.0001,
             value=(
                 max(1, int(Decimal(str(x_kesin_default))))
+                if x_kesin_default is not None and integer_anchors
+                else float(Decimal(str(x_kesin_default)))
                 if x_kesin_default is not None
                 else None
             ),
-            step=1,
+            step=1 if integer_anchors else 0.1,
+            format=None if integer_anchors else "%.4f",
             key=f"{rule_code}-{customer_type}-x-kesin",
-            help="At this count, the rule score is 0.9. It must be greater than the starting count.",
+            help=parameter_by_name["x_kesin"]["meaning"],
             disabled=not editable,
         )
         if result["x_esik"] is None or result["x_kesin"] is None:
-            st.error("Enter both score counts.")
+            st.error("Enter both score anchors.")
             invalid = True
         elif result["x_kesin"] <= result["x_esik"]:
-            st.error("The high-confidence count must exceed the starting count.")
+            st.error("The high-confidence point must exceed the starting point.")
             invalid = True
 
     if rule_code == "R01":
+        band_column, above_column = st.columns(2)
+        band_low_default = values.get("band_low", "0.9")
+        above_check_default = values.get("above_check", "1.1")
+        result["band_low"] = band_column.number_input(
+            "Lower band as a fraction of limit",
+            min_value=0.0001,
+            max_value=0.9999,
+            value=float(Decimal(str(band_low_default))),
+            step=0.01,
+            format="%.4f",
+            key=f"{rule_code}-{customer_type}-band-low",
+            help="Inclusive lower bound; for example, 0.9 means 90% of the limit.",
+            disabled=not editable,
+        )
+        result["above_check"] = above_column.number_input(
+            "Upper check as a multiple of limit",
+            min_value=1.0001,
+            value=float(Decimal(str(above_check_default))),
+            step=0.01,
+            format="%.4f",
+            key=f"{rule_code}-{customer_type}-above-check",
+            help="An amount from the limit up to (but not including) this multiple forces the R01 score to zero.",
+            disabled=not editable,
+        )
         ratio_column, currency_column = st.columns(2)
         income_ratio_default = values.get("minimum_income_ratio")
         result["minimum_income_ratio"] = ratio_column.number_input(
@@ -175,7 +231,7 @@ def _parameter_inputs(
             st.error("Enter the three-letter monthly income currency code.")
             invalid = True
 
-    if rule_code == "R03":
+    if "cash_channels" in parameter_names:
         selected_channels = values.get("cash_channels", [])
         channel_labels = st.multiselect(
             "Channels treated as cash deposits",
@@ -191,6 +247,137 @@ def _parameter_inputs(
         result["cash_channels"] = channel_labels
         if not channel_labels:
             st.error("Select at least one channel treated as a cash deposit.")
+            invalid = True
+
+    if "cash_accounts" in parameter_names:
+        account_ids = values.get("cash_accounts", [])
+        account_text = st.text_area(
+            "Cash/custody account IDs to exclude",
+            value=", ".join(str(account_id) for account_id in account_ids),
+            key=f"{rule_code}-{customer_type}-cash-accounts",
+            help="Enter database account_id values separated by commas. Leave blank when no accounts should be excluded.",
+            disabled=not editable,
+        )
+        try:
+            parsed_ids = [
+                int(item.strip())
+                for item in account_text.split(",")
+                if item.strip()
+            ]
+            if any(account_id <= 0 for account_id in parsed_ids):
+                raise ValueError
+            if len(parsed_ids) != len(set(parsed_ids)):
+                st.error("Cash/custody account IDs must be unique.")
+                invalid = True
+            result["cash_accounts"] = parsed_ids
+        except ValueError:
+            st.error("Enter positive integer account IDs separated by commas.")
+            invalid = True
+
+    if "season_factor" in parameter_names:
+        factors = values.get("season_factor", {})
+        season_text = st.text_area(
+            "Season factors by week-ending date",
+            value="\n".join(
+                f"{date_text}={factor}" for date_text, factor in factors.items()
+            ),
+            key=f"{rule_code}-{customer_type}-season-factor",
+            help="Optional entries, one per line in YYYY-MM-DD=factor format; for example 2026-01-04=1.2.",
+            disabled=not editable,
+        )
+        season_factors: dict[str, str] = {}
+        try:
+            for line in season_text.splitlines():
+                if not line.strip():
+                    continue
+                date_text, factor_text = line.split("=", 1)
+                season_date = date.fromisoformat(date_text.strip())
+                factor = Decimal(factor_text.strip())
+                if not factor.is_finite() or factor <= 0:
+                    raise ValueError
+                normalized_date = season_date.isoformat()
+                if normalized_date in season_factors:
+                    raise ValueError
+                season_factors[normalized_date] = str(factor)
+            result["season_factor"] = season_factors
+        except (ValueError, ArithmeticError):
+            st.error("Enter season factors as unique valid dates with positive values.")
+            invalid = True
+
+    if "suspicious_status" in parameter_names:
+        result["suspicious_status"] = st.selectbox(
+            "Qualifying analyst-confirmed alert status",
+            options=["confirmed_suspicious"],
+            index=0,
+            key=f"{rule_code}-{customer_type}-suspicious-status",
+            help="Only an alert-history event confirming suspicious activity qualifies.",
+            disabled=not editable,
+        )
+
+    special_names = {
+        "limits",
+        "x_esik",
+        "x_kesin",
+        "window_days",
+        "band_low",
+        "above_check",
+        "minimum_income_ratio",
+        "income_currency",
+        "cash_channels",
+        "cash_accounts",
+        "season_factor",
+        "suspicious_status",
+    }
+    bounds = {
+        "history_days": (1, None),
+        "history_weeks": (1, None),
+        "min_count": (1, None),
+        "income_bands": (2, None),
+        "dormant_days": (1, None),
+        "account_age_days": (1, None),
+        "baseline_days": (1, None),
+        "window_hours": (1, None),
+        "max_step_hours": (1, None),
+        "max_depth": (2, 20),
+        "max_cycle_length": (3, 20),
+        "ratio_low": (0.0, None),
+        "ratio_high": (0.000001, None),
+        "kappa": (0.0, None),
+        "mad_floor": (0.000001, None),
+        "cv_threshold": (0.000001, None),
+        "cv_multiplier": (0.000001, None),
+        "decay_low": (0.000001, 0.999999),
+        "decay_high": (0.000001, 0.999999),
+        "min_retained": (0.0, 1.0),
+        "pingpong_tolerance": (0.0, None),
+        "gamma": (0.0, 1.0),
+    }
+    for parameter in parameters:
+        name = parameter["name"]
+        if name in special_names:
+            continue
+        minimum, maximum = bounds.get(name, (None, None))
+        current = values.get(name)
+        integer = parameter["type"] == "integer"
+        default = (
+            int(current)
+            if current is not None and integer
+            else float(Decimal(str(current)))
+            if current is not None
+            else None
+        )
+        result[name] = st.number_input(
+            f"{name.replace('_', ' ').capitalize()} ({parameter['unit']})",
+            min_value=minimum,
+            max_value=maximum,
+            value=default,
+            step=1 if integer else 0.1,
+            key=f"{rule_code}-{customer_type}-{name}",
+            help=parameter["meaning"],
+            disabled=not editable,
+        )
+        if result[name] is None:
+            st.error(f"Enter {name.replace('_', ' ')}.")
             invalid = True
 
     return None if invalid else result
@@ -222,6 +409,13 @@ try:
             )
         else:
             with st.expander("How this rule works and what its settings mean"):
+                feasibility = metadata.get("feasibility", "HIGH")
+                st.caption(
+                    f"Implementation feasibility: {feasibility}. "
+                    f"{metadata.get('feasibility_reason', '')}"
+                )
+                for note in metadata.get("analyst_review_notes", []):
+                    st.warning(note)
                 st.markdown("**Rule steps**")
                 for index, step in enumerate(metadata["steps"], 1):
                     st.markdown(f"{index}. {step}")
@@ -230,7 +424,8 @@ try:
                     st.markdown(f"- **{parameter['name']}** — {parameter['meaning']}")
                 st.caption(
                     "UNSET means the rule skips this customer type. PROVISIONAL values "
-                    "are used with a warning. APPROVED values are institution-approved."
+                    "are used with a warning. APPROVED values are institution-approved. "
+                    "The rule can be activated when at least one customer type is configured."
                 )
 
             existing_thresholds = selected.get("thresholds") or {}
@@ -295,6 +490,7 @@ try:
                                     selected["rule_code"],
                                     customer_type,
                                     current.get("values", {}),
+                                    metadata["parameters"],
                                     editable=can_edit,
                                 )
                                 if entered_values is None:

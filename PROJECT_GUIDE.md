@@ -32,9 +32,10 @@ and what the current version does **not** do.
 ## 1. The project in one minute
 
 This application accepts customer, account, and transaction records; evaluates
-transactions against four understandable rules; stores any resulting alerts;
-and gives a user screens to review alerts, upload CSVs, edit rule parameters,
-and see aggregate counts.
+transactions against 15 configurable rules (R01–R15); stores the resulting
+rule evaluations and analyst alerts; and gives a user screens to review alerts,
+upload CSVs, edit rule parameters, and see aggregate counts. Separate legacy
+R1–R4 indicators remain on the transaction-analysis screen.
 
 It has three runtime pieces:
 
@@ -77,11 +78,11 @@ User action in Streamlit
 | `backend/models.py` | SQLAlchemy entity definitions, including users, roles, and permissions. |
 | `backend/services/` | Application workflows for authentication, audit, analysis, alerts, demo seeding, detection, rules, transactions, uploads, and users. |
 | `backend/repositories/` | SQLAlchemy data-access implementations injected into services, including identity and audit repositories. |
-| `backend/detection/` | Detection engine contracts and independent R1–R4 strategy implementations. |
+| `backend/detection/` | Detection engine contracts, validated parameters, shared scoring, and independent R01–R15 strategies. |
 | `backend/rules.py` | Backward-compatible exports for the detection service and deduplication helper. |
-| `backend/demo.py` | Creates a small, repeatable set of synthetic data and rule defaults. |
+| `backend/demo.py` | Creates the repeatable synthetic customer/account/transaction fixture and per-rule scenarios. |
 | `database/V1__initial_schema.sql` | Original PostgreSQL schema, constraints, indexes, triggers, and initial rule rows. |
-| `alembic.ini`, `alembic/` | Alembic configuration, original baseline, and RBAC migration. |
+| `alembic.ini`, `alembic/` | Alembic configuration, original baseline, RBAC/rule-framework migrations, and R04–R15 rule seeding. |
 | `tests/test_application.py`, `tests/test_rbac.py` | Model, rule, and authorization regression tests. |
 | `.vscode/launch.json` | VS Code launch buttons for the API, UI, or both together. |
 | `.env.example` | Template for local configuration. Copy this to `.env` and set your own database URL. |
@@ -253,6 +254,7 @@ is available at `/docs` while the API is running.
 | `PUT /rules/{rule_code}` | Save a rule's active flag and thresholds. | `rule:edit` | Rejects invalid values with 422 and attributes the actor from the token. |
 | `POST /rules/evaluate` | Evaluate active rules against stored transactions. | `rule:edit` | Manual evaluation; automatic upload evaluation needs no extra permission. |
 | `POST /demo/seed` | Seed demo data and evaluate it. | `upload:create` + `ENABLE_DEMO_ENDPOINTS=true` | Disabled by default; repeat calls avoid duplicate demo records. |
+| `GET /demo/status` | Read the synthetic demo fixture inventory. | `dashboard:view` | Lists reserved `DEMO-*` customers, accounts, transactions, and rule-scenario targets. |
 | `POST /uploads?entity=...` | Upload customer/account/transaction CSV. | `upload:create` | Validates CSV and attributes the batch to the authenticated user. |
 | `GET /uploads/{batch_id}` | Retrieve one upload report. | `upload:view` | Includes stored row errors; returns 404 for an unknown batch. |
 | `GET /users`, `GET /users/roles` | List users and assignable active roles. | `user:manage` | Never returns password hashes. |
@@ -275,172 +277,170 @@ status again returns `changed: false` and creates no history row.
 
 ## 7. Rule engine: exact behavior and math
 
-The thresholds are read from each active rule's `thresholds` JSONB field.
-Python's `Decimal` is used for amount comparisons so currency math is not based
-on binary floating-point arithmetic. The implementation is intentionally
-simple and is not a tuned large-scale detection engine.
+The active rule thresholds are read independently from each
+`monitoring_rule.thresholds` JSONB value. The Streamlit rule-management page
+uses metadata-driven guided fields; the API validates those fields against
+each strategy's Pydantic parameter model. Existing saved R01/R03
+configurations that omit the new date-window or band settings receive
+conservative defaults when validated. Each rule owns its own parameters; one
+rule does not read another rule's settings. R04–R15 are seeded inactive with
+`UNSET` parameters. A rule can be activated once at least one customer type
+has configured parameters; any type left `UNSET` is skipped during evaluation.
+Feasibility ratings and analyst review notes are returned by the rules API and
+shown in the UI.
 
-All rules consider active transactions ordered by `tx_time` and transaction ID.
-They attach findings to the sender's customer, except that R2's grouping is
-account-based and the alert is attached to that account's owner.
+The engine loads active customers and active transactions once, evaluates each
+registered rule strategy, and returns one result per rule/customer. It stores
+the parameter snapshot, score, trace, and supporting transactions in
+`rule_result` and `rule_result_transaction`. For alert-mode results with a
+score of at least 0.5, the repository creates an analyst alert and links
+available transaction evidence. Aggregate-only R04 alerts intentionally have
+no transaction links; their calculation trace is stored in `rule_result`.
+Amount comparisons use `Decimal`.
 
-### R1 — Repeated near-limit transactions
+The current detection registry contains R01 through R15. The legacy R1–R4
+transaction-analysis indicators are separate and do not create alerts through
+this engine.
 
-Default parameters:
+### R01 — Near-limit outgoing activity
 
-```text
-amount_limit       = 10,000
-proximity_percent  = 10
-transaction_count  = 2
-window_minutes     = 60
-```
+For each customer, R01 considers active outgoing transactions in the
+configured `income_currency` during the configured calendar-day window,
+starting at midnight on `run_date - window_days + 1`. It excludes transfers
+between accounts owned by the same customer. The near-limit band is
+`[band_low * L, L)`, where `L` is the configured limit for `income_currency`.
+The band count is the score input `x`, and the band amounts are summed for the
+monthly-income ratio check.
 
-The inclusive lower bound is:
+An eligible transaction in `[L, above_check * L)` forces the score to zero.
+Otherwise the score is suppressed if the income ratio is below
+`minimum_income_ratio`. To avoid alerts without this safeguard, missing or
+zero monthly income also suppresses the score for now; this is explicitly
+marked for analyst review in the Rule Management screen. Currency conversion
+is not performed.
 
-```text
-lower_bound = amount_limit * (1 - proximity_percent / 100)
-            = 10,000 * (1 - 10 / 100)
-            = 9,000
-```
+### R02 — Large single transaction
 
-For each customer/currency pair, the code keeps **outgoing** transactions
-whose amounts satisfy:
+R02 considers active incoming and outgoing transactions on the run date, up
+to (but not including) the evaluation timestamp. It applies the configured
+customer-type/currency limit independently to each transaction. If any amount
+is greater than or equal to its limit, the score is 1 and **all** qualifying
+transactions are attached as evidence; otherwise the score is 0. Unsupported
+currencies are ignored. A qualifying result creates an analyst alert; there
+is no INFO-only or signal-only outcome.
 
-```text
-9,000 <= amount < 10,000
-```
+### R03 — Repeated cash-channel deposits
 
-Starting from each candidate transaction in time order, it collects the
-candidate transactions no later than `window_minutes` after that start. If the
-window contains at least `transaction_count` transactions, it creates one
-finding linked to the matching transactions. After a finding, it advances
-past that matched group before searching for the next group.
+R03 considers active incoming transactions in the configured cash channels
+during the configured calendar-day window. Amounts strictly below the
+configured limit are counted. To avoid combining unrelated activity, counts
+are currently evaluated separately by receiving account and currency, and
+transfers between accounts of the same customer are excluded. The highest
+account/currency count supplies the score input and evidence. This conservative
+scope is marked for analyst review; R03 owns its limits rather than depending
+on R02's configuration. Cash-channel choices are also institution-owned and
+should be approved by an analyst.
 
-**Demo example:** customer 1 sends 9,500 at 09:20 and 9,600 at 09:45. Both are
-in the range and 25 minutes apart, so they satisfy the default R1 rule.
+### Shared scoring and alert handling
 
-**Boundary example:** 9,000 qualifies; 10,000 does not. The latter is exactly
-the configured limit, not “below” it.
+R01 and R03–R13 (except R14 and R15), plus the ping-pong component of R14, use
+a sigmoid score. The configured `x_esik` is the 0.5 score point and
+`x_kesin` is the 0.9 point; the implementation scales by `ln(9)` so both
+anchors are exact. R02 is binary, R14 takes the larger of its cycle and
+ping-pong scores, and R15 uses 1 for direct contact or configured `gamma` for
+contact through one intermediary.
 
-### R2 — Rapid in-and-out transfers
+Alerts with scores from 0.5 upward are assigned `low` below 0.7, `medium` from
+0.7 to below 0.9, and `high` at 0.9 or above. At most one alert per
+rule/customer/run date is created; PostgreSQL's unique deduplication key and
+`ON CONFLICT DO NOTHING` make repeated or concurrent evaluations idempotent.
+Same-day evaluations accumulate evidence on the existing alert and retain its
+highest score/severity. That daily grouping can combine distinct same-day
+episodes, so it is also listed for analyst review in the Rule Management
+screen. The application uses its existing `new` alert status for an open
+analyst item; it does not add a separate literal `OPEN` status.
 
-Default parameters:
-
-```text
-outflow_ratio = 0.8
-window_minutes = 60
-```
-
-For each account, the code gathers active transactions that touch that account
-and have the account's currency. For each transaction time as a possible
-window start, it gathers transactions from that time through 60 minutes later,
-inclusive. Then it computes:
-
-```text
-incoming = sum(amount where account is receiver)
-outgoing = sum(amount where account is sender)
-ratio    = outgoing / incoming
-```
-
-An alert is considered only when `incoming > 0` and `ratio >= 0.8`.
-
-**Demo example:** account 7 receives 1,000 at 09:30 and sends 850 at 09:50.
-The ratio is `850 / 1,000 = 0.85`, so it meets the 0.8 threshold.
-
-The implementation uses the same rolling window for both directions; it does
-not pair each incoming transfer to a particular outgoing transfer. Transfers
-are treated as same-currency totals, not converted across currencies.
-
-### R3 — Unusual transaction amount
-
-Default parameters:
-
-```text
-average_multiplier   = 3
-minimum_history_count = 5
-```
-
-For each customer/currency pair, the engine orders outgoing transactions by
-time. For a current transaction it takes the most recent configured number of
-**preceding** outgoing transactions; the current transaction is not part of
-its own baseline. It requires enough history before comparing:
-
-```text
-historical_average = sum(previous N amounts) / N
-trigger            = current_amount > historical_average * multiplier
-```
-
-The comparison is strictly `>`: equality does not trigger the rule.
-
-**Demo example:** customer 2 has five earlier outgoing transactions of
-100, 120, 90, 110, and 80. Their average is 100. A later transaction of 400 is
-greater than `100 * 3`, so it triggers R3.
-
-The baseline is the latest N transactions, not a lifetime average over every
-previous transaction. The current implementation does not exclude a transfer
-back to another account owned by the same customer; it treats any sender-side
-transaction as outgoing.
-
-### R4 — Configured country match
-
-Default SQL parameters are disabled with an empty country list. The demo seed
-enables R4 and configures `TR` and `IL` so the demo shows this screen/rule
-working. When enabled, each active transaction whose country code matches the
-configured list creates an R4 candidate.
-
-This is a string match, not a real-world country risk assessment. `TR` and
-`IL` are demo examples only. A production country list, ownership, updates,
-and policy approval are not part of this project.
-
-### How duplicate alerts are prevented
-
-Each candidate produces a stable key:
-
-1. Sort the linked transaction IDs.
-2. Join them into a stable string; for R2 include the account ID as scope.
-3. Hash that string with SHA-256.
-4. Prefix the result with the rule code.
-
-The database has a unique constraint on `alert.deduplication_key`. Inserts use
-PostgreSQL `ON CONFLICT DO NOTHING`, so a second evaluation does not duplicate
-the same finding. This also lets PostgreSQL enforce deduplication if two rule
-evaluations happen concurrently.
-
-### Severity and evaluation triggers
-
-R1/R2 alerts are marked `medium`; R3/R4 alerts are marked `high`. These are
-fixed code choices, not parameters or learned risk scores. Rules run when the
-user presses the demo-seed or “run rules now” button, and after a transaction
-CSV upload containing accepted rows. There is no scheduled background
+Rules run when the user presses “Evaluate rules now”, when transaction CSV
+uploads contain accepted rows, and through the optional demo seed. R15 loads
+historical `confirmed_suspicious` status events and active accounts for those
+customers to build its contact context. There is no scheduled background
 evaluation.
+
+### Rule-by-rule feasibility
+
+These ratings describe implementation/data feasibility, not predictive
+quality or regulatory suitability. New rules remain inactive pending
+institution-specific thresholds and analyst approval.
+
+| Rule | Feasibility | Main review item |
+| --- | --- | --- |
+| R01 | Medium | Monthly-income currency is not stored; the selected income currency is an analyst-approved assumption. |
+| R02 | High | Simple currency-specific amount comparison; threshold calibration and alert workload are institution-owned. |
+| R03 | Medium | Cash-channel classification and account/currency aggregation need analyst approval. |
+
+#### R04–R15 — Extended rules
+
+| Rule | Behavior | Feasibility | Main review item |
+| --- | --- | --- | --- |
+| R04 | Compare the larger of recent external incoming/outgoing TRY volume with monthly income. | Medium | Customer income has no stored currency; TRY is assumed. Aggregate alerts have no transaction links. |
+| R05 | Compare current transaction log-amounts with robust own-history and income-band peer baselines. | Medium | Income groups use deterministic equal-count ranking; histories are currency-scoped and peers need sufficient data. |
+| R06 | Compare current-week activity to prior weekly counts using Poisson/negative-binomial tail probability. | Medium | Internal transfers are excluded; validate the standard-library tail calculation and seasonal factors on reference data. |
+| R07 | Detect renewed high-volume activity in dormant accounts. | High | Account ownership, active status, and transaction history must be accurate. |
+| R08 | Score transfers on recently opened accounts against currency-specific limits. | High | Missing account opening dates are skipped; dates are interpreted as calendar days. |
+| R09 | Compare current-period cash share to the immediately preceding period. | Medium | Raw ratios are not adjusted for unequal period lengths; cash channels require approval. |
+| R10 | Detect high incoming volume followed by transfers to recently contacted recipients. | Medium | Uses an evaluation-time-ending window and compares amounts only within currency. |
+| R11 | Count newly encountered sender accounts in a calendar-day window. | Medium | Cash/custody exclusions are manually configured account IDs. |
+| R12 | Count newly encountered recipients, with an equal-amount multiplier based on within-currency variation. | Medium | Uses population standard deviation; exclusions and multiplier need calibration. |
+| R13 | Find fast, decreasing, same-currency external transaction chains. | Low | Path enumeration can be expensive in dense graphs; workload performance needs measurement. |
+| R14 | Find same-currency cycles and near-equal A→B/B→A pairs. | Low | Cycle search can be expensive; cycle and relative-difference interpretations need calibration. |
+| R15 | Find direct or one-intermediary contact with customers having a historical confirmed-suspicious status. | Medium | Only the existing confirmed status is supported; path depth is limited to one intermediary. |
+
+R05–R15 use active transaction records and the date/currency/ownership
+boundaries documented in their stored rule traces. R06, R13, and R14 are
+especially sensitive to historical-data quality and volume. Feasibility labels
+are planning guidance, not approval to use a rule for production decisions.
 
 ## 8. The demo dataset
 
-`backend/demo.py` uses stable external identifiers (`DEMO-001`,
-`DEMO-ACC-001`, `DEMO-TX-001`, and so on) and checks for existing rows before
-inserting them. This makes repeated clicks safe for the normal intact demo
-dataset.
+`backend/demo.py` creates a repeatable, synthetic monitoring fixture using
+stable `DEMO-*` customer, account, and transaction numbers. It contains 24
+customers, 24 TRY accounts, and 80 transactions spanning recent activity and
+historical windows. Fifteen scenario labels map each rule to its intended
+customer/account and describe the activity designed to exercise it. These are
+coverage examples for inspecting rule behavior, not a statistically
+representative test population or production-threshold validation.
 
-The seed contains:
+The seed evaluates all R01–R15 using synthetic-only PROVISIONAL parameter
+overrides by default. This mode does not change saved rule configuration or
+activation state. The optional saved-settings mode evaluates only active rules
+using their configured thresholds, so inactive rules show as not evaluated and
+configured UNSET customer types are reported as skipped. In both modes, the
+evaluation is restricted to fixture customers and transactions whose sender
+and receiver are both fixture-owned. R15 gets a demo-only synthetic
+confirmed-suspicious customer context; no alert history is created or changed
+to provide that context.
 
-- 10 synthetic customers.
-- 10 TRY accounts (one per customer).
-- 20 transactions with deterministic timestamps and amounts.
-- Four rules, created if missing.
-- The initial schema's legacy `demo-system` row is not used as a request actor.
+The endpoint returns a detection run ID, counts, per-rule evaluation/signal
+counts and elapsed time, and scenario-level expected signal, observed score,
+evidence transaction numbers, and pass status. The Streamlit demo control
+renders this on the **Operations → Demo lab** page, alongside customer,
+account, and transaction inventory. The inventory remains visible after
+navigation and across reruns; the latest score/evidence remains visible for the
+current Streamlit session. In default
+mode, a signal is defined as a score of at least 0.50; the same observed signal
+is shown in saved-settings mode to help assess threshold changes. This is a
+visual monitoring aid, not proof that a rule is calibrated correctly. R13/R14
+use a deliberately small, sparse graph; use a separate larger performance
+dataset to study graph-search scaling.
 
-The seed then invokes the same `evaluate_rules` service used by the explicit
-rule-evaluation endpoint. The currently seeded database produced 15 alerts
-(R1: 1, R2: 4, R3: 1, R4: 9). Alert row IDs are database-generated and should
-not be assumed to be the same on another database.
+### Repeatability and scope
 
-### A note about repeatability
-
-The seed only creates the transaction set if it finds no row whose transaction
-number starts with `DEMO-TX-`. It does not repair a partially deleted demo
-transaction set. For this tiny learning dataset, avoiding duplicate rows on a
-repeat click is the goal; a general-purpose fixture reset/migration tool is not
-implemented.
+Seeding repairs the stable fixture rows, updates their relative timestamps,
+and reactivates fixture-owned customers, accounts, and transactions. Legacy
+six-transaction demo rows are deactivated so they cannot affect the new
+scenarios. Seeding does not delete data. Do not reuse the `DEMO-*` identifiers
+for manually imported records; the seed owns those identifiers. The initial
+schema's legacy `demo-system` row is not used as a request actor.
 
 ## 9. CSV upload and row-level errors
 
@@ -552,8 +552,10 @@ lookup can fetch any entered batch ID.
 ### Rule management
 
 The page fetches `GET /rules`, displays the selected rule's parameters using
-rule-specific widgets, and submits them to `PUT /rules/{code}`. API validation
-is still required because clients can bypass the UI.
+rule-specific widgets (including the R01/R03 windows and R01 amount bands), and
+submits them to `PUT /rules/{code}`. Analyst-owned policy questions appear as
+review notes beside the rule guide; provisional values remain editable. API
+validation is still required because clients can bypass the UI.
 
 ### State and refresh behavior
 
@@ -585,7 +587,9 @@ file.
 
 The baseline also inserts the legacy `demo-system` row if absent. The RBAC
 migration maps existing string roles to `app_role`; new request actions use
-the authenticated user's ID.
+the authenticated user's ID. The subsequent rule-framework migration adds
+evaluation/result tables and seeds R01–R03; the latest migration seeds
+inactive, `UNSET` monitoring-rule rows for R04–R15.
 
 This initial migration is deliberately a **baseline**, not a sequence of
 fine-grained transformations from the old SQL schema. It cannot be safely
@@ -637,7 +641,8 @@ They check:
 - SQLAlchemy mapper relationships can be configured.
 - Known rule values pass threshold validation.
 - Invalid or ambiguous values are rejected.
-- Alert candidate deduplication is stable and includes R2 account scope.
+- Calendar-day rule/customer alert deduplication, severity thresholds, and
+  transaction evidence links are covered.
 - PostgreSQL URL formats are normalized to the installed driver.
 - RBAC route permissions, login audit events, identity attribution, and
   alert-scoped customer history are checked without truncating append-only

@@ -147,7 +147,7 @@ CREATE TRIGGER rule_change_log_is_append_only
     BEFORE UPDATE OR DELETE ON rule_change_log
     FOR EACH ROW EXECUTE FUNCTION reject_immutable_record_changes();
 
-INSERT INTO monitoring_rule (rule_code, name, description, thresholds) VALUES
+/*INSERT INTO monitoring_rule (rule_code, name, description, thresholds) VALUES
     ('R1', 'Threshold-adjacent repeated transactions',
      'Detects repeated transactions just below a configured limit within a short time window.',
      '{"amount_limit": 10000, "proximity_percent": 10, "transaction_count": 2, "window_minutes": 60}'::jsonb),
@@ -160,4 +160,4 @@ INSERT INTO monitoring_rule (rule_code, name, description, thresholds) VALUES
     ('R4', 'Risky country',
      'Optionally detects transactions associated with configured high-risk countries.',
      '{"countries": [], "enabled": false}'::jsonb)
-ON CONFLICT (rule_code) DO NOTHING;
+ON CONFLICT (rule_code) DO NOTHING;*/

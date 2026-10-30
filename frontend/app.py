@@ -1,5 +1,3 @@
-import os
-
 import streamlit as st
 
 from utils.api import ApiError, api_request, show_api_error
@@ -88,6 +86,13 @@ else:
     )
     add_page(
         "Operations",
+        "app_pages/demo_lab.py",
+        "Demo lab",
+        ":material/science:",
+        "dashboard:view",
+    )
+    add_page(
+        "Operations",
         "app_pages/rule_management.py",
         "Rule management",
         ":material/tune:",
@@ -116,35 +121,14 @@ else:
         st.title("Sentinel")
         st.caption(f"Signed in as {st.session_state.get('current_user', '')}")
         if st.button("Sign out", width="stretch"):
-            for key in ("auth_token", "permissions", "current_user"):
+            for key in (
+                "auth_token",
+                "permissions",
+                "current_user",
+                "demo_last_run",
+            ):
                 st.session_state.pop(key, None)
             st.rerun()
-        if (
-            "upload:create" in permissions
-            and os.getenv("ENABLE_DEMO_ENDPOINTS", "").lower() == "true"
-        ):
-            st.divider()
-            if st.button(
-                "Load demo data",
-                type="secondary",
-                icon=":material/database:",
-                width="stretch",
-            ):
-                try:
-                    result = api_request("POST", "/demo/seed")
-                    st.success(
-                        f"Demo ready: {result['customers']} customers, "
-                        f"{result['transactions']} new scenario transactions; "
-                        f"{result['created_alerts']} new alerts."
-                    )
-                    st.caption(
-                        "Demo-only PROVISIONAL thresholds are run for synthetic "
-                        "customers; saved rule settings remain unchanged. R02 is "
-                        "stored as an INFO signal, not an alert."
-                    )
-                except ApiError as error:
-                    show_api_error(error)
-            st.caption("Use synthetic data for evaluation and demonstrations.")
 
     pages = st.navigation(page_groups)
     pages.run()

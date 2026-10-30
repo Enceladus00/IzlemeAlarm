@@ -1,12 +1,14 @@
+from datetime import datetime
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
-from types import SimpleNamespace
 
 from sqlalchemy.orm import configure_mappers
 
 from backend.db_url import normalize_database_url
+from backend.detection.evaluation import DetectionEvaluation
+from backend.detection.registry import load_rule_registry
 from backend.main import app
 from backend.models import AlertStatusHistory, AuditLog, Base, RuleChangeLog
 from backend.repositories.alert_repository import SqlAlchemyAlertRepository
@@ -18,6 +20,7 @@ from backend.repositories.rule_repository import SqlAlchemyRuleRepository
 from backend.rules import _dedup
 from backend.services.alert_service import AlertService
 from backend.services.demo_service import DemoService
+from backend.services.detection_service import DetectionService
 from backend.services.rule_service import (
     InvalidRuleThresholds,
     RuleService,
@@ -47,6 +50,7 @@ class ApplicationTests(unittest.TestCase):
             "/rules/{rule_code}",
             "/rules/evaluate",
             "/demo/seed",
+            "/demo/status",
             "/uploads",
             "/uploads/{batch_id}",
             "/audit-log",
@@ -177,6 +181,171 @@ class ApplicationTests(unittest.TestCase):
         self.assertIn("limits", str(raised.exception))
         self.assertIn("cash_channels", str(raised.exception))
 
+    def test_r04_to_r15_parameter_models_accept_configurable_values(self) -> None:
+        examples = {
+            "R04": {"window_days": 7, "x_esik": "0.1", "x_kesin": "0.5"},
+            "R05": {
+                "history_days": 90,
+                "kappa": "5",
+                "mad_floor": "0.1",
+                "income_bands": 5,
+                "x_esik": "1",
+                "x_kesin": "3",
+            },
+            "R06": {
+                "history_weeks": 12,
+                "min_count": 3,
+                "season_factor": {"2026-01-11": "1.2"},
+                "x_esik": "1",
+                "x_kesin": "3",
+            },
+            "R07": {
+                "dormant_days": 90,
+                "window_days": 7,
+                "limits": {"TRY": "1000"},
+                "x_esik": "1",
+                "x_kesin": "3",
+            },
+            "R08": {
+                "account_age_days": 30,
+                "limits": {"TRY": "1000"},
+                "x_esik": "1",
+                "x_kesin": "3",
+            },
+            "R09": {
+                "window_days": 7,
+                "baseline_days": 30,
+                "cash_channels": ["atm", "branch"],
+                "limits": {"TRY": "1000"},
+                "x_esik": "0.1",
+                "x_kesin": "0.5",
+            },
+            "R10": {
+                "window_hours": 24,
+                "limits": {"TRY": "1000"},
+                "ratio_low": "0.5",
+                "ratio_high": "1.2",
+                "x_esik": "0.5",
+                "x_kesin": "1",
+            },
+            "R11": {"window_days": 7, "x_esik": 1, "x_kesin": 3},
+            "R12": {
+                "window_days": 7,
+                "cv_threshold": "0.2",
+                "cv_multiplier": "2",
+                "x_esik": 1,
+                "x_kesin": 3,
+            },
+            "R13": {
+                "window_days": 7,
+                "max_step_hours": 24,
+                "decay_low": "0.5",
+                "decay_high": "0.9",
+                "max_depth": 5,
+                "x_esik": 2,
+                "x_kesin": 5,
+            },
+            "R14": {
+                "window_days": 7,
+                "max_cycle_length": 5,
+                "min_retained": "0.8",
+                "pingpong_tolerance": "0.05",
+                "x_esik": 1,
+                "x_kesin": 3,
+            },
+            "R15": {
+                "window_days": 7,
+                "suspicious_status": "confirmed_suspicious",
+                "gamma": "0.5",
+            },
+        }
+        for rule_code, values in examples.items():
+            thresholds = {
+                customer_type: {
+                    "status": "PROVISIONAL",
+                    "values": values,
+                }
+                for customer_type in ("BIREYSEL", "KURUMSAL")
+            }
+            with self.subTest(rule_code=rule_code):
+                normalized = validate_thresholds(rule_code, thresholds)
+                self.assertEqual(normalized["BIREYSEL"]["status"], "PROVISIONAL")
+
+    def test_every_rule_parameter_is_exposed_in_rule_metadata(self) -> None:
+        for rule_code, strategy in load_rule_registry().items():
+            model_fields = set(strategy.definition.parameter_model.model_fields)
+            metadata_fields = {
+                parameter.name for parameter in strategy.definition.parameters
+            }
+            with self.subTest(rule_code=rule_code):
+                self.assertEqual(model_fields, metadata_fields)
+
+    def test_rule_list_includes_feasibility_and_review_metadata(self) -> None:
+        class FakeRuleRepository:
+            def list_rules(self):
+                return [
+                    SimpleNamespace(
+                        rule_code="R13",
+                        name="legacy name",
+                        description="legacy description",
+                        is_active=False,
+                        weight=Decimal("1.000"),
+                        thresholds={},
+                    )
+                ]
+
+        rule = RuleService(FakeRuleRepository()).list_rules()[0]
+        self.assertEqual(rule["metadata"]["feasibility"], "LOW")
+        self.assertTrue(rule["metadata"]["feasibility_reason"])
+        self.assertTrue(rule["metadata"]["analyst_review_notes"])
+        self.assertTrue(rule["metadata"]["parameters"])
+
+    def test_detection_service_builds_suspicious_contact_context(self) -> None:
+        class FakeRepository:
+            def list_rules(self):
+                return []
+
+            def list_active_customers(self, _customer_ids):
+                return []
+
+            def list_active_transactions(self, _customer_ids=None):
+                return []
+
+            def list_customers_with_history_status(self, status):
+                self.status = status
+                return {22}
+
+            def list_account_ids_for_customers(self, customer_ids):
+                self.customer_ids = customer_ids
+                return {2201, 2202}
+
+            def persist_run(self, _run_id, _as_of, _evaluation, _rules, **_kwargs):
+                self.evaluation = _evaluation
+                return 0
+
+        class CaptureEngine:
+            def evaluate(self, *_args, **kwargs):
+                self.context = kwargs["context"]
+                return DetectionEvaluation(results=[], summary={})
+
+        repository = FakeRepository()
+        engine = CaptureEngine()
+        self.assertEqual(DetectionService(repository, engine).evaluate(), 0)
+        self.assertEqual(repository.status, "confirmed_suspicious")
+        self.assertEqual(repository.customer_ids, {22})
+        self.assertEqual(
+            engine.context.suspicious_customer_ids_by_status[
+                "confirmed_suspicious"
+            ],
+            {22},
+        )
+        self.assertEqual(
+            engine.context.suspicious_account_ids_by_status[
+                "confirmed_suspicious"
+            ],
+            {2201, 2202},
+        )
+
     def test_rule_thresholds_reject_unsafe_or_ambiguous_values(self) -> None:
         invalid = [
             (
@@ -227,8 +396,11 @@ class ApplicationTests(unittest.TestCase):
                 with self.assertRaises(InvalidRuleThresholds):
                     validate_thresholds(rule_code, thresholds)
 
-    def test_rule_activation_rejects_unset_parameters(self) -> None:
+    def test_rule_activation_requires_at_least_one_configured_customer_type(self) -> None:
         class FakeRuleRepository:
+            def __init__(self):
+                self.saved = None
+
             def get_rule(self, rule_code):
                 return SimpleNamespace(
                     rule_code=rule_code,
@@ -240,16 +412,38 @@ class ApplicationTests(unittest.TestCase):
                     is_active=False,
                 )
 
+            def save_rule(self, rule, thresholds, is_active, weight, actor_id):
+                self.saved = (thresholds, is_active)
+
+        repository = FakeRuleRepository()
+        service = RuleService(repository)
+        unset_thresholds = {
+            "BIREYSEL": {"status": "UNSET", "values": {}},
+            "KURUMSAL": {"status": "UNSET", "values": {}},
+        }
         with self.assertRaises(InvalidRuleThresholds):
-            RuleService(FakeRuleRepository()).update_rule(
+            service.update_rule(
                 "R02",
-                {
-                    "BIREYSEL": {"status": "UNSET", "values": {}},
-                    "KURUMSAL": {"status": "UNSET", "values": {}},
-                },
+                unset_thresholds,
                 True,
                 actor_id=7,
             )
+
+        configured_thresholds = {
+            "BIREYSEL": {
+                "status": "PROVISIONAL",
+                "values": {"limits": {"TRY": "100"}},
+            },
+            "KURUMSAL": {"status": "UNSET", "values": {}},
+        }
+        service.update_rule(
+            "R02",
+            configured_thresholds,
+            True,
+            actor_id=7,
+        )
+        self.assertTrue(repository.saved[1])
+        self.assertEqual(repository.saved[0]["KURUMSAL"]["status"], "UNSET")
 
     def test_weight_and_activation_changes_are_audited(self) -> None:
         records: list[object] = []
@@ -281,28 +475,197 @@ class ApplicationTests(unittest.TestCase):
 
     def test_demo_runs_provisional_overrides_only_for_synthetic_customers(self) -> None:
         class FakeDetectionService:
-            def evaluate(self, **kwargs):
+            def evaluate_detailed(self, **kwargs):
                 self.kwargs = kwargs
-                return 2
+                return SimpleNamespace(
+                    run_id="demo-run",
+                    created_alerts=2,
+                    evaluation=DetectionEvaluation(
+                        results=[
+                            SimpleNamespace(
+                                rule_code="R01",
+                                customer_id=11,
+                                result_status="evaluated",
+                                parameter_status="PROVISIONAL",
+                                score=Decimal("0.7500"),
+                                transactions=[
+                                    SimpleNamespace(transaction_no="D-R01-001")
+                                ],
+                            )
+                        ],
+                        summary={"rules": {"R01": {"elapsed_ms": 1.0}}},
+                    ),
+                )
 
         detection = FakeDetectionService()
         service = DemoService(SimpleNamespace(), detection)
         with patch(
             "backend.services.demo_service.seed_demo_data",
             return_value={
-                "customers": 10,
-                "accounts": 10,
-                "transactions": 6,
-                "rules": 3,
-                "demo_customer_ids": [11, 12, 13],
+                "customers": 24,
+                "accounts": 24,
+                "transactions": 80,
+                "rules": 15,
+                "demo_customer_ids": list(range(11, 35)),
+                "demo_suspicious_customer_ids": [22],
+                "scenarios": [
+                    {
+                        "rule_code": "R01",
+                        "customer_no": "DEMO-001",
+                        "account_no": "DEMO-ACC-001",
+                        "customer_id": 11,
+                        "intent": "Near-limit activity.",
+                        "expected_signal": "score >= 0.50",
+                    }
+                ],
+            },
+        ), patch.object(
+            DemoService,
+            "status",
+            return_value={
+                "seeded": True,
+                "customer_rows": [],
+                "account_rows": [],
+                "transaction_rows": [],
+                "scenarios": [],
             },
         ):
             result = service.seed(actor_id=7)
 
-        self.assertEqual(detection.kwargs["customer_ids"], {11, 12, 13})
-        self.assertEqual(set(detection.kwargs["rule_overrides"]), {"R01", "R02", "R03"})
+        expected_demo_ids = set(range(11, 35))
+        self.assertEqual(detection.kwargs["customer_ids"], expected_demo_ids)
+        self.assertEqual(
+            detection.kwargs["transaction_customer_ids"], expected_demo_ids
+        )
+        self.assertEqual(detection.kwargs["suspicious_customer_ids"], {22})
+        self.assertEqual(
+            set(detection.kwargs["rule_overrides"]),
+            {f"R{number:02d}" for number in range(1, 16)},
+        )
         self.assertTrue(result["demo_only_parameters"])
         self.assertEqual(result["created_alerts"], 2)
+        self.assertEqual(result["run_id"], "demo-run")
+        self.assertTrue(result["demo_data_isolated"])
+        self.assertTrue(result["scenarios"][0]["observed_signal"])
+        self.assertTrue(result["scenarios"][0]["passed"])
+        self.assertEqual(
+            result["scenarios"][0]["evidence_transaction_numbers"], ["D-R01-001"]
+        )
+
+    def test_demo_can_evaluate_saved_active_rule_settings(self) -> None:
+        class FakeDetectionService:
+            def evaluate_detailed(self, **kwargs):
+                self.kwargs = kwargs
+                return SimpleNamespace(
+                    run_id="saved-run",
+                    created_alerts=0,
+                    evaluation=DetectionEvaluation(results=[], summary={"rules": {}}),
+                )
+
+        scenario = {
+            "rule_code": "R01",
+            "customer_no": "DEMO-001",
+            "account_no": "DEMO-ACC-001",
+            "customer_id": 11,
+            "intent": "Near-limit activity.",
+            "expected_signal": "score >= 0.50",
+        }
+        detection = FakeDetectionService()
+        service = DemoService(SimpleNamespace(), detection)
+        with patch(
+            "backend.services.demo_service.seed_demo_data",
+            return_value={
+                "customers": 24,
+                "accounts": 24,
+                "transactions": 80,
+                "rules": 15,
+                "demo_customer_ids": [11],
+                "demo_suspicious_customer_ids": [22],
+                "scenarios": [scenario],
+            },
+        ), patch.object(
+            DemoService,
+            "status",
+            return_value={
+                "seeded": True,
+                "customer_rows": [],
+                "account_rows": [],
+                "transaction_rows": [],
+                "scenarios": [],
+            },
+        ):
+            result = service.seed(actor_id=7, use_saved_rules=True)
+
+        self.assertIsNone(detection.kwargs["rule_overrides"])
+        self.assertTrue(result["saved_rule_settings_used"])
+        self.assertFalse(result["demo_only_parameters"])
+        self.assertEqual(result["parameter_mode"], "saved_active_rules")
+        self.assertEqual(result["scenarios"][0]["result_status"], "not_evaluated_inactive")
+        self.assertIsNone(result["scenarios"][0]["passed"])
+
+    def test_demo_status_exposes_fixture_inventory_and_rule_targets(self) -> None:
+        class ScalarRows(list):
+            def unique(self):
+                return self
+
+        customers = []
+        accounts = []
+        for index in range(1, 25):
+            customer = SimpleNamespace(
+                customer_id=index,
+                customer_no=f"DEMO-{index:03d}",
+                full_name=f"Demo Customer {index:02d}",
+                customer_type="BIREYSEL" if index <= 3 else "KURUMSAL",
+                monthly_income=Decimal("50000"),
+                is_active=True,
+                accounts=[],
+            )
+            account = SimpleNamespace(
+                account_id=index,
+                account_no=f"DEMO-ACC-{index:03d}",
+                customer_id=index,
+                customer=customer,
+                currency="TRY",
+                account_type="current",
+                opened_at=None,
+                is_active=True,
+            )
+            customer.accounts.append(account)
+            customers.append(customer)
+            accounts.append(account)
+
+        transaction = SimpleNamespace(
+            transaction_no="D-R01-001",
+            sender_account_id=1,
+            receiver_account_id=2,
+            sender_account=accounts[0],
+            receiver_account=accounts[1],
+            amount=Decimal("9500"),
+            currency="TRY",
+            tx_time=datetime(2026, 1, 1, 12),
+            channel="internet",
+            is_active=True,
+        )
+
+        class FakeSession:
+            def __init__(self):
+                self.query_count = 0
+
+            def scalars(self, _statement):
+                self.query_count += 1
+                return ScalarRows(customers if self.query_count == 1 else [transaction])
+
+        inventory = DemoService(FakeSession(), SimpleNamespace()).status()
+
+        self.assertTrue(inventory["seeded"])
+        self.assertTrue(inventory["fixture_ready"])
+        self.assertEqual(inventory["customers"], 24)
+        self.assertEqual(inventory["accounts"], 24)
+        self.assertEqual(inventory["transactions"], 1)
+        self.assertEqual(len(inventory["customer_rows"]), 24)
+        self.assertEqual(inventory["transaction_rows"][0]["transaction_no"], "D-R01-001")
+        self.assertEqual(len(inventory["scenarios"]), 15)
+        self.assertEqual(inventory["scenarios"][0]["customer_no"], "DEMO-001")
 
     def test_deduplication_key_is_stable_and_scoped(self) -> None:
         transactions = [

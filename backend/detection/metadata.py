@@ -7,6 +7,7 @@ from backend.models import Customer, Transaction
 
 
 AlertMode = Literal["ALERT", "SIGNAL_ONLY"]
+RuleFeasibility = Literal["HIGH", "MEDIUM", "LOW"]
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,9 @@ class RuleDefinition:
     alert_mode: AlertMode
     parameter_model: type[RuleParameterValues]
     parameters: tuple[ParameterSpec, ...]
+    analyst_review_notes: tuple[str, ...] = ()
+    feasibility: RuleFeasibility = "HIGH"
+    feasibility_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,7 @@ class RawRuleResult:
     binary_limit: Decimal | None = None
     force_zero: bool = False
     ignored_currency_count: int = 0
+    score_override: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,12 @@ class RuleResultEvidence:
     alert_mode: AlertMode
 
 
+@dataclass(frozen=True)
+class DetectionContext:
+    suspicious_customer_ids_by_status: dict[str, set[int]]
+    suspicious_account_ids_by_status: dict[str, set[int]]
+
+
 class RuleStrategy:
     definition: RuleDefinition
 
@@ -68,5 +79,6 @@ class RuleStrategy:
         parameter_sets: dict[str, dict[str, Any]],
         *,
         as_of: Any,
+        context: DetectionContext | None = None,
     ) -> list[RawRuleResult]:
         raise NotImplementedError

@@ -173,8 +173,20 @@ class FakeDetectionService:
 
 
 class FakeDemoService:
-    def seed(self, _actor_id):
+    def seed(self, _actor_id, *, use_saved_rules=False):
         return {"created_alerts": 0}
+
+    def status(self):
+        return {
+            "seeded": False,
+            "customers": 0,
+            "accounts": 0,
+            "transactions": 0,
+            "customer_rows": [],
+            "account_rows": [],
+            "transaction_rows": [],
+            "scenarios": [],
+        }
 
 
 class FakeAuditService:
@@ -298,6 +310,7 @@ def test_analyst_is_denied_admin_only_routes_and_audited(
     [
         ("get", "/rules", {}, 200),
         ("get", "/dashboard/summary", {}, 200),
+        ("get", "/demo/status", {}, 200),
         ("put", "/rules/R01", {"json": {"thresholds": {}, "is_active": True}}, 200),
         ("post", "/rules/evaluate", {}, 200),
         ("get", "/uploads/1", {}, 200),

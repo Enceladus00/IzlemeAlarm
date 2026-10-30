@@ -40,12 +40,27 @@ def dashboard_summary(
 
 @router.post("/demo/seed")
 def seed_demo(
+    use_saved_rules: bool = False,
     user: AuthenticatedUser = Depends(require_permission("upload:create")),
     service: DemoService = Depends(get_demo_service),
 ) -> dict[str, Any]:
     if os.getenv("ENABLE_DEMO_ENDPOINTS", "").lower() != "true":
         raise HTTPException(status_code=404, detail="Demo endpoints are disabled.")
     try:
-        return service.seed(user.user_id)
+        return service.seed(user.user_id, use_saved_rules=use_saved_rules)
     except SQLAlchemyError as exc:
         raise HTTPException(status_code=503, detail="Could not seed demo data.") from exc
+
+
+@router.get("/demo/status")
+def demo_status(
+    _user: AuthenticatedUser = Depends(require_permission("dashboard:view")),
+    service: DemoService = Depends(get_demo_service),
+) -> dict[str, Any]:
+    try:
+        return {
+            **service.status(),
+            "seed_enabled": os.getenv("ENABLE_DEMO_ENDPOINTS", "").lower() == "true",
+        }
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="Could not load demo data.") from exc
