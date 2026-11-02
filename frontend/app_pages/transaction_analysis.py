@@ -66,7 +66,10 @@ else:
             st.info("No transactions match the selected filters.")
         else:
             frame = pd.DataFrame(transactions)
-            frame["tx_time"] = pd.to_datetime(frame["tx_time"])
+            frame["tx_time"] = pd.to_datetime(
+            frame["tx_time"],
+            format="ISO8601"
+            )
             frame["amount_numeric"] = pd.to_numeric(frame["amount"])
             frame["date"] = frame["tx_time"].dt.date
 
