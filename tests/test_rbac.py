@@ -93,11 +93,13 @@ class FakeAuthService:
 class FakeAlertService:
     def __init__(self) -> None:
         self.status_actor_id: int | None = None
+        self.list_filters: dict[str, Any] = {}
 
     def list_rule_codes(self) -> list[str]:
         return ["R01", "R02"]
 
     def list_alerts(self, **_kwargs: Any) -> dict[str, Any]:
+        self.list_filters = _kwargs
         return {"total": 1, "items": [{"alert_id": 1, "rule_code": "R01"}]}
 
     def get_alert(self, _alert_id: int) -> dict[str, Any]:
@@ -353,6 +355,19 @@ def test_alert_status_actor_comes_from_token_not_request_body(api_client):
     assert alert_service.status_actor_id == 2
 
 
+def test_alert_list_can_be_filtered_by_customer(api_client):
+    client, _audit_rows, alert_service = api_client
+    response = client.get(
+        "/alerts",
+        params={"customer_no": "C-1042", "offset": 0, "limit": 200},
+        headers=authorization("analyst"),
+    )
+    assert response.status_code == 200
+    assert alert_service.list_filters["customer_no"] == "C-1042"
+    assert alert_service.list_filters["offset"] == 0
+    assert alert_service.list_filters["limit"] == 200
+
+
 def test_analyst_alert_detail_and_history_are_alert_scoped(api_client):
     client, _audit_rows, _alert_service = api_client
     detail = client.get("/alerts/1", headers=authorization("analyst"))
@@ -399,6 +414,39 @@ def test_alert_customer_history_query_is_scoped_to_alert_customer():
     assert "account.customer_id = 23" in compiled
     assert "transaction.sender_account_id IN" in compiled
     assert "transaction.receiver_account_id IN" in compiled
+
+
+def test_alert_list_query_filters_by_customer_number():
+    captured: list[Any] = []
+
+    class EmptyScalars:
+        def __iter__(self):
+            return iter(())
+
+        def unique(self):
+            return self
+
+    class QueryCaptureSession:
+        def scalar(self, _statement):
+            return 0
+
+        def scalars(self, statement):
+            captured.append(statement)
+            return EmptyScalars()
+
+    repository = SqlAlchemyAlertRepository(QueryCaptureSession())
+    repository.list_alerts(
+        status=None,
+        severity=None,
+        rule_code=None,
+        customer_no="C-1042",
+        date_from=None,
+        date_to=None,
+        offset=0,
+        limit=200,
+    )
+    compiled = str(captured[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "customer.customer_no = 'C-1042'" in compiled
 
 
 def test_password_hashing_limit_and_jwt_subject(monkeypatch):

@@ -27,6 +27,7 @@ class SqlAlchemyAlertRepository:
         status: str | None,
         severity: str | None,
         rule_code: str | None,
+        customer_no: str | None,
         date_from: date | None,
         date_to: date | None,
         offset: int,
@@ -48,6 +49,8 @@ class SqlAlchemyAlertRepository:
             query = query.where(Alert.severity == severity)
         if rule_code:
             query = query.where(MonitoringRule.rule_code == rule_code)
+        if customer_no:
+            query = query.where(Customer.customer_no == customer_no)
         if date_from:
             query = query.where(
                 Alert.created_at >= datetime.combine(date_from, time.min)

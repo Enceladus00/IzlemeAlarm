@@ -17,6 +17,20 @@ class ApiError(Exception):
         self.status_code = status_code
 
 
+def get_alerts_for_customer(
+    customer_no: str, *, offset: int = 0, limit: int = 200
+) -> dict[str, Any]:
+    return api_request(
+        "GET",
+        "/alerts",
+        params={
+            "customer_no": customer_no,
+            "offset": offset,
+            "limit": limit,
+        },
+    )
+
+
 def api_request(
     method: str,
     path: str,
