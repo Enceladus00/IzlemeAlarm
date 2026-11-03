@@ -10,29 +10,50 @@ import { NotFoundPage } from './NotFoundPage';
 
 type PageComponent = ComponentType<{ item: NavItem }>;
 
-const ComingSoon = lazy(() => import('@/features/placeholder/ComingSoonPage'));
 const DetectionOverview = lazy(() => import('@/features/detection-overview/DetectionOverviewPage'));
 const SystemOverview = lazy(() => import('@/features/system-overview/SystemOverviewPage'));
+const AlertQueue = lazy(() => import('@/features/alerts/AlertQueuePage'));
+const AlertDetail = lazy(() => import('@/features/alerts/AlertDetailPage'));
+const TransactionAnalysis = lazy(() => import('@/features/transactions/TransactionAnalysisPage'));
+const DataManagement = lazy(() => import('@/features/data-management/DataManagementPage'));
+const DemoLab = lazy(() => import('@/features/demo-lab/DemoLabPage'));
+const Rules = lazy(() => import('@/features/rules/RulesPage'));
+const Users = lazy(() => import('@/features/users/UsersPage'));
+const AuditLog = lazy(() => import('@/features/audit/AuditLogPage'));
 
 /**
- * Screen implementations by navigation id. Milestones replace the
- * ComingSoon entries with the real feature pages.
+ * Screen implementations by navigation id.
  */
 const PAGES: Record<NavId, PageComponent> = {
   detectionOverview: DetectionOverview,
-  alerts: ComingSoon,
-  transactions: ComingSoon,
-  dataManagement: ComingSoon,
-  demoLab: ComingSoon,
-  rules: ComingSoon,
+  alerts: AlertQueue,
+  transactions: TransactionAnalysis,
+  dataManagement: DataManagement,
+  demoLab: DemoLab,
+  rules: Rules,
   systemOverview: SystemOverview,
-  users: ComingSoon,
-  audit: ComingSoon,
+  users: Users,
+  audit: AuditLog,
 };
+
+/** Nested screens that share a navigation item (and its permission). */
+const SUB_ROUTES: Array<{ path: string; parent: NavId; page: PageComponent }> = [
+  { path: 'alerts/:alertId', parent: 'alerts', page: AlertDetail },
+];
 
 function PageFallback() {
   const { t } = useTranslation();
   return <PageSpinner label={t('common.loading')} />;
+}
+
+function guarded(item: NavItem, Page: PageComponent): RouteObject['element'] {
+  return (
+    <RequirePermission item={item}>
+      <Suspense fallback={<PageFallback />}>
+        <Page item={item} />
+      </Suspense>
+    </RequirePermission>
+  );
 }
 
 export const routes: RouteObject[] = [
@@ -46,19 +67,11 @@ export const routes: RouteObject[] = [
     ),
     children: [
       { index: true, element: <HomeRedirect /> },
-      ...NAV_ITEMS.map((item): RouteObject => {
-        const Page = PAGES[item.id];
-        return {
-          path: item.path.slice(1),
-          element: (
-            <RequirePermission item={item}>
-              <Suspense fallback={<PageFallback />}>
-                <Page item={item} />
-              </Suspense>
-            </RequirePermission>
-          ),
-        };
-      }),
+      ...NAV_ITEMS.map((item): RouteObject => ({ path: item.path.slice(1), element: guarded(item, PAGES[item.id]) })),
+      ...SUB_ROUTES.map(({ path, parent, page }): RouteObject => ({
+        path,
+        element: guarded(NAV_ITEMS.find((item) => item.id === parent)!, page),
+      })),
       { path: '*', element: <NotFoundPage /> },
     ],
   },

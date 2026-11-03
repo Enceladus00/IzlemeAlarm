@@ -28,6 +28,7 @@ and what the current version does **not** do.
 15. [Questions you should be able to answer](#15-questions-you-should-be-able-to-answer)
 16. [Glossary](#16-glossary)
 17. [Role-based access control](#17-role-based-access-control)
+18. [The React interface (frontend-v2)](#18-the-react-interface-frontend-v2)
 
 ## 1. The project in one minute
 
@@ -69,6 +70,8 @@ User action in Streamlit
 | `frontend/app_pages/` | Detection overview, alert investigation, transaction analysis, data management, rule management, user management, and audit-log pages. |
 | `frontend/components/` | Shared page headers, metric layouts, and transaction tables. |
 | `frontend/utils/api.py` | Shared HTTP client and user-facing API errors. |
+| `frontend-v2/` | React interface (Vite, TypeScript) with the same screens as Streamlit; see [section 18](#18-the-react-interface-frontend-v2). |
+| `Dockerfile.frontend-v2`, `frontend-v2/nginx.conf.template` | Container image that serves the React build with nginx and proxies `/api` to FastAPI. |
 | `backend/main.py` | FastAPI application factory and router composition. |
 | `backend/api/routes/` | Thin HTTP adapters grouped by authentication, analysis, alerts, audit, rules, transactions, uploads, and users. |
 | `backend/api/dependencies.py` | Constructs application services from the request-scoped database session. |
@@ -671,6 +674,15 @@ Use the API docs at `/docs` to inspect exact request shapes and responses. For
 a UI issue, first check the browser page, then the API response, then backend
 logs; that sequence tells you which layer is responsible.
 
+The React interface has its own checks, run from `frontend-v2/`:
+
+```powershell
+npm test            # unit, component, and accessibility tests (Vitest)
+npm run typecheck
+npm run lint
+npm run build
+```
+
 ## 14. Limits and deliberate omissions
 
 These are important when explaining the project honestly:
@@ -825,3 +837,44 @@ Do not edit or stamp revision `0001` as the RBAC revision. The RBAC revision
 is `0002_rbac`. The demo seed endpoint is disabled unless
 `ENABLE_DEMO_ENDPOINTS=true` is explicitly set, and still requires
 `upload:create`.
+
+## 18. The React interface (frontend-v2)
+
+`frontend-v2/` is a second client of the same API. It has every Streamlit
+screen and does not change backend behaviour; Streamlit stays available.
+
+**How it talks to the API.** The browser only calls its own origin under
+`/api`. In development the Vite server forwards `/api/*` to FastAPI (stripping
+the prefix); in the container nginx does the same. The API therefore needs no
+CORS configuration. Every response is checked against a zod schema in
+`src/api/schemas/`, so a change in an API response shape shows up as a clear
+error instead of a silently broken screen. Python `Decimal` values arrive as
+JSON strings (`"45000.00"`); the UI keeps them as strings and sums money in
+integer cents, so amounts are never rounded through floating point.
+
+**Sessions and permissions.** Login posts the same form fields as Streamlit to
+`/auth/login`. The token is kept in memory and in `sessionStorage` (a refresh
+keeps the session; closing the tab ends it). The UI signs out when the
+30-minute token expires or any call returns 401. Navigation and route guards
+in `src/app/navigation.ts` mirror the Streamlit permission checks, but they are
+only a convenience: the API still enforces every permission, and a 403 is
+shown as a permission error.
+
+**Behaviour that differs from Streamlit, deliberately.**
+
+- The alert queue groups alerts by customer and sorts by severity, then alert
+  age. The API returns at most 200 alerts per request, so the queue loads in
+  pages of 200 and warns when groups are computed from a partial set.
+- Transaction analysis splits incoming/outgoing values only when a customer is
+  selected. Without one, every transfer would count on both sides, so the
+  screen shows one total per currency instead.
+- The legacy R1 near-threshold panel was dropped: migration 0003 deactivated
+  R1 and it has no editable implementation.
+- The account-movement diagram is a TypeScript port of
+  `frontend/components/transaction_flow.py`; its tests reproduce
+  `tests/test_transaction_flow.py`, and its ribbon geometry matches the Python
+  output exactly. It loads at most 20 pages (10,000 transfers) per selection.
+
+**Placeholders.** Where the design calls for data the API does not provide,
+the UI renders a dashed purple "Yer tutucu / Placeholder" marker rather than
+invented values. The full list is in `frontend-v2/README.md`.

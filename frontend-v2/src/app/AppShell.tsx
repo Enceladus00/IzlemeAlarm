@@ -4,7 +4,9 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { NavLink, Outlet, useLocation } from 'react-router';
 import { useAuth } from '@/auth/auth-context';
+import { useAlertCount } from '@/features/alerts/api';
 import { cn } from '@/utils/cn';
+import { formatNumber } from '@/utils/format';
 import { isReadOnly, NAV_SECTIONS, visibleNavItems } from './navigation';
 import { LanguageSwitcher, ThemeToggle } from './Preferences';
 import { SessionCountdown } from './SessionCountdown';
@@ -31,6 +33,19 @@ function Brand() {
         <p className="truncate text-xs text-sidebar-muted">{t('app.tagline')}</p>
       </div>
     </div>
+  );
+}
+
+/** Count of new (unreviewed) alerts beside the alert queue link. */
+function NewAlertsBadge() {
+  const { t, i18n } = useTranslation();
+  const count = useAlertCount({ status: 'new' });
+  if (!count.data) return null;
+  return (
+    <span className="rounded-md bg-accent px-1.5 py-0.5 text-[11px] font-bold text-accent-fg tabular-nums">
+      {formatNumber(count.data, i18n.resolvedLanguage ?? 'tr')}
+      <span className="sr-only"> {t('alertStatus.new')}</span>
+    </span>
   );
 }
 
@@ -88,6 +103,7 @@ function SidebarContent() {
                       >
                         <Icon className="size-4 shrink-0" aria-hidden />
                         <span className="flex-1 truncate">{t(`nav.${item.id}`)}</span>
+                        {item.id === 'alerts' && <NewAlertsBadge />}
                         {isReadOnly(item, permissions) && (
                           <span className="text-[10px] text-sidebar-muted">{t('nav.readOnly')}</span>
                         )}

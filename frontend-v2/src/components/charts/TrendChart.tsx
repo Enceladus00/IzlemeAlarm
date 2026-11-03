@@ -101,14 +101,18 @@ export function TrendChart({
   return (
     <div className="min-w-0">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <ul className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted" aria-label={t('charts.legend')}>
-          {series.map((s) => (
-            <li key={s.key} className="flex items-center gap-2">
-              <span className="h-0.5 w-4 rounded-full" style={{ background: s.color }} aria-hidden />
-              {s.label}
-            </li>
-          ))}
-        </ul>
+        {series.length > 1 ? (
+          <ul className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted" aria-label={t('charts.legend')}>
+            {series.map((s) => (
+              <li key={s.key} className="flex items-center gap-2">
+                <span className="h-0.5 w-4 rounded-full" style={{ background: s.color }} aria-hidden />
+                {s.label}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <span />
+        )}
         {toolbar}
       </div>
       <div

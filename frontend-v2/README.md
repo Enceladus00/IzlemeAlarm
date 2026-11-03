@@ -21,8 +21,30 @@ The dev server proxies `/api/*` to `VITE_API_PROXY_TARGET`
 | --- | --- |
 | `npm run dev` | Development server with hot reload |
 | `npm run build` | Typecheck and production build into `dist/` |
-| `npm test` | Unit and component tests (Vitest, Testing Library, MSW) |
+| `npm run preview` | Serve the production build (same `/api` proxy) |
+| `npm test` | Unit, component, and accessibility tests (Vitest, Testing Library, MSW, axe-core) |
 | `npm run typecheck` / `npm run lint` | TypeScript and ESLint checks |
+
+## Container
+
+From the repository root:
+
+```powershell
+docker build -f Dockerfile.frontend-v2 -t sentinel-frontend-v2 .
+docker run -p 8080:8080 -e API_UPSTREAM=http://host.docker.internal:8000 sentinel-frontend-v2
+```
+
+nginx serves the build on `PORT` (default 8080), falls back to `index.html`
+for app routes, caches hashed assets for a year, and proxies `/api/*` to
+`API_UPSTREAM` (default `http://backend:8000`) without the prefix.
+
+## Tests
+
+Tests run against a mocked API (MSW) whose handlers apply the same filters and
+paging as the real endpoints, so they check the requests the UI sends as well
+as what it renders. `src/app/a11y.test.tsx` runs axe-core (WCAG 2.1 A/AA) on
+every screen; colour contrast is not measurable in jsdom and is covered by the
+validated chart palette and manual review in both themes.
 
 ## Stack
 
@@ -66,3 +88,26 @@ src/
   utils/       formatting and error helpers
   test/        Vitest setup, MSW server, render helpers
 ```
+
+## Placeholders
+
+These design elements have no data source in the API today. Each is shown
+with the `<Placeholder>` marker; filling them would need API changes.
+
+| Screen | Element | What the API would need to provide |
+| --- | --- | --- |
+| Alert queue | "Bugün kararlaştırdığım" (decided by me today) | Who changed an alert's status (actor on alert history) |
+| Alert queue | "Bana geri gönderilen" (sent back to me) | An assignment / send-back workflow |
+| Alert queue | "Son işlem yapan" (last actor) column | Actor on alert history |
+| Alert queue | Customer type under each customer | `customer_type` in the alert summary |
+| Alert detail | "İşlemi yapan" in the analyst history | Actor on alert history |
+| System overview | Schema "Güncel" (up to date) | Whether the revision is the latest migration |
+
+Other API limits the UI works around:
+
+- Customer search in the alert queue matches the loaded alerts only; the API
+  filters by exact customer number, not by name.
+- Every alert filter takes one value (no multi-select).
+- Upload reports are looked up by batch number; there is no upload history list.
+- The audit log has no server-side filters; actor names are resolved through
+  `/users` when the viewer has `user:manage`, otherwise the actor id is shown.

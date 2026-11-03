@@ -57,3 +57,8 @@ export function formatMoney(
   const amount = formatNumber(value, language, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return amount === '—' ? amount : `${amount} ${currency}`;
 }
+
+/** Local calendar date as YYYY-MM-DD (what the API's date filters expect). */
+export function isoDate(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}

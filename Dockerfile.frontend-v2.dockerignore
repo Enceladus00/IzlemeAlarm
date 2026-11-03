@@ -1,0 +1,10 @@
+# Applies only to Dockerfile.frontend-v2 (BuildKit per-Dockerfile ignore file).
+**/node_modules
+**/dist
+**/coverage
+.git
+.venv
+**/__pycache__
+.env
+frontend-v2/.env
+frontend-v2/public/__session.html

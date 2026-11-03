@@ -25,6 +25,8 @@ export const MOCK_USERS: Record<string, { role_code: string; permissions: string
   'ayse.karaca': { role_code: 'analyst', permissions: ANALYST_PERMISSIONS },
   nobody: { role_code: 'analyst', permissions: [] },
   viewer: { role_code: 'auditor', permissions: ['dashboard:view'] },
+  reviewer: { role_code: 'auditor', permissions: ['alert:view'] },
+  uploadviewer: { role_code: 'auditor', permissions: ['upload:view'] },
 };
 
 /** Token format used by the mocks: "token-<username>". */
