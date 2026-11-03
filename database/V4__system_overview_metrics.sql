@@ -1,0 +1,8 @@
+ALTER TABLE account
+    ADD COLUMN created_at TIMESTAMP WITHOUT TIME ZONE;
+
+ALTER TABLE account
+    ALTER COLUMN created_at SET DEFAULT CURRENT_TIMESTAMP;
+
+ALTER TABLE detection_run
+    ADD COLUMN duration_ms BIGINT;

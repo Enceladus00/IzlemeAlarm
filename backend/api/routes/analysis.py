@@ -38,6 +38,19 @@ def dashboard_summary(
         raise HTTPException(status_code=503, detail="Could not load dashboard.") from exc
 
 
+@router.get("/admin/system-overview")
+def system_overview(
+    _user: AuthenticatedUser = Depends(require_permission("user:manage")),
+    service: AnalysisService = Depends(get_analysis_service),
+) -> dict[str, Any]:
+    try:
+        return service.system_overview()
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Could not load system overview."
+        ) from exc
+
+
 @router.post("/demo/seed")
 def seed_demo(
     use_saved_rules: bool = False,

@@ -1,7 +1,11 @@
+import os
 from datetime import date, datetime, time, timedelta
+from time import perf_counter
 from typing import Any
 
 from backend.repositories.analysis_repository import SqlAlchemyAnalysisRepository
+from backend.security import ACCESS_TOKEN_MINUTES
+from backend.services.upload_service import MAX_UPLOAD_BYTES, MAX_UPLOAD_ROWS
 
 
 class AnalysisService:
@@ -50,4 +54,44 @@ class AnalysisService:
                     for offset in range(30)
                 )
             ],
+        }
+
+    def system_overview(self) -> dict[str, Any]:
+        now = datetime.now()
+        database_started = perf_counter()
+        self._repository.check_database()
+        database_latency_ms = round((perf_counter() - database_started) * 1000, 1)
+        data = self._repository.system_overview_data(
+            now - timedelta(days=7),
+            now - timedelta(hours=24),
+        )
+        last_run = data["last_run"]
+        last_run_at = (
+            (last_run.completed_at or last_run.started_at) if last_run else None
+        )
+        return {
+            "health": {
+                "api": "ok",
+                "database": "connected",
+                "database_latency_ms": database_latency_ms,
+                "schema_revision": data["schema_revision"],
+            },
+            "rules": {
+                "active": data["active_rules"],
+                "last_run_at": last_run_at,
+                "last_run_status": last_run.status if last_run else None,
+                "last_run_duration_ms": last_run.duration_ms if last_run else None,
+            },
+            "records": data["records"],
+            "security": {
+                "session_ttl_seconds": ACCESS_TOKEN_MINUTES * 60,
+                "demo_endpoint_enabled": (
+                    os.getenv("ENABLE_DEMO_ENDPOINTS", "").lower() == "true"
+                ),
+                "active_users": data["active_users"],
+                "total_users": data["total_users"],
+                "csv_max_bytes": MAX_UPLOAD_BYTES,
+                "csv_max_rows": MAX_UPLOAD_ROWS,
+                **data["audit_counts"],
+            },
         }

@@ -1,3 +1,5 @@
+import time
+
 import streamlit as st
 
 from utils.api import ApiError, api_request, show_api_error
@@ -26,6 +28,9 @@ if not st.session_state.get("auth_token"):
                 data={"username": username, "password": password},
             )
             st.session_state["auth_token"] = token_result["access_token"]
+            st.session_state["auth_expires_at"] = (
+                time.time() + int(token_result["expires_in"])
+            )
             profile = api_request("GET", "/auth/me")
             st.session_state["current_user"] = profile["username"]
             st.session_state["permissions"] = profile["permissions"]
@@ -56,6 +61,13 @@ else:
                 st.Page(path, title=title, icon=icon)
             )
 
+    add_page(
+        "Administration",
+        "app_pages/system_overview.py",
+        "System overview",
+        ":material/monitor_heart:",
+        "user:manage",
+    )
     add_page(
         "Monitoring",
         "app_pages/detection_overview.py",
@@ -120,9 +132,26 @@ else:
     with st.sidebar:
         st.title("Sentinel")
         st.caption(f"Signed in as {st.session_state.get('current_user', '')}")
+
+        @st.fragment(run_every="1s")
+        def render_session_countdown() -> None:
+            expires_at = st.session_state.get("auth_expires_at")
+            if expires_at is None:
+                return
+            remaining = max(0, int(expires_at - time.time()))
+            if remaining == 0:
+                for key in ("auth_token", "auth_expires_at", "permissions", "current_user"):
+                    st.session_state.pop(key, None)
+                st.warning("Your session expired. Please sign in again.")
+                st.rerun()
+            minutes, seconds = divmod(remaining, 60)
+            st.caption(f"Session expires in {minutes:02d}:{seconds:02d}")
+
+        render_session_countdown()
         if st.button("Sign out", width="stretch"):
             for key in (
                 "auth_token",
+                "auth_expires_at",
                 "permissions",
                 "current_user",
                 "demo_last_run",

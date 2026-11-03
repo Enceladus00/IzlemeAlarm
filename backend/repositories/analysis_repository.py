@@ -1,14 +1,18 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select, text
 from sqlalchemy.orm import Session
 
 from backend.models import (
     Account,
     Alert,
     AlertTransaction,
+    AppRole,
+    AppUser,
+    AuditLog,
     Customer,
+    DetectionRun,
     MonitoringRule,
     Transaction,
 )
@@ -77,4 +81,87 @@ class SqlAlchemyAnalysisRepository:
             "rules": rules,
             "alert_trends": alert_trends,
             "suspicious_trends": suspicious_trends,
+        }
+
+    def system_overview_data(
+        self, seven_days_ago: datetime, twenty_four_hours_ago: datetime
+    ) -> dict[str, Any]:
+        record_metrics = {}
+        for key, model, id_column, created_column in (
+            ("customers", Customer, Customer.customer_id, Customer.created_at),
+            ("accounts", Account, Account.account_id, Account.created_at),
+            (
+                "transactions",
+                Transaction,
+                Transaction.transaction_id,
+                Transaction.loaded_at,
+            ),
+            ("alerts", Alert, Alert.alert_id, Alert.created_at),
+        ):
+            row = self._session.execute(
+                select(
+                    func.count(id_column),
+                    func.coalesce(
+                        func.sum(
+                            case((created_column >= seven_days_ago, 1), else_=0)
+                        ),
+                        0,
+                    ),
+                    func.max(created_column),
+                ).select_from(model)
+            ).one()
+            record_metrics[key] = {
+                "total": int(row[0] or 0),
+                "added_last_7_days": int(row[1] or 0),
+                "last_added_at": row[2],
+            }
+
+        audit_counts = dict(
+            self._session.execute(
+                select(AuditLog.action, func.count())
+                .where(
+                    AuditLog.created_at >= twenty_four_hours_ago,
+                    AuditLog.action.in_(("LOGIN_FAILED", "ACCESS_DENIED")),
+                )
+                .group_by(AuditLog.action)
+            ).all()
+        )
+        last_run = self._session.scalar(
+            select(DetectionRun).order_by(
+                DetectionRun.started_at.desc(), DetectionRun.run_id.desc()
+            ).limit(1)
+        )
+        schema_revision = self._session.scalar(
+            text("SELECT version_num FROM alembic_version")
+        )
+
+        return {
+            "records": record_metrics,
+            "active_rules": int(
+                self._session.scalar(
+                    select(func.count())
+                    .select_from(MonitoringRule)
+                    .where(MonitoringRule.is_active)
+                )
+                or 0
+            ),
+            "last_run": last_run,
+            "active_users": int(
+                self._session.scalar(
+                    select(func.count())
+                    .select_from(AppUser)
+                    .join(AppRole)
+                    .where(AppUser.is_active, AppRole.is_active)
+                )
+                or 0
+            ),
+            "total_users": int(
+                self._session.scalar(select(func.count()).select_from(AppUser))
+                or 0
+            ),
+            "audit_counts": {
+                "failed_logins_last_24h": int(audit_counts.get("LOGIN_FAILED", 0)),
+                "access_denied_last_24h": int(audit_counts.get("ACCESS_DENIED", 0)),
+            },
+            "schema_revision": schema_revision,
         }

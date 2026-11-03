@@ -321,6 +321,7 @@ class ApplicationTests(unittest.TestCase):
 
             def persist_run(self, _run_id, _as_of, _evaluation, _rules, **_kwargs):
                 self.evaluation = _evaluation
+                self.started_at = _kwargs["started_at"]
                 return 0
 
         class CaptureEngine:
@@ -331,6 +332,7 @@ class ApplicationTests(unittest.TestCase):
         repository = FakeRepository()
         engine = CaptureEngine()
         self.assertEqual(DetectionService(repository, engine).evaluate(), 0)
+        self.assertIsInstance(repository.started_at, datetime)
         self.assertEqual(repository.status, "confirmed_suspicious")
         self.assertEqual(repository.customer_ids, {22})
         self.assertEqual(

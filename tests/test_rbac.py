@@ -168,6 +168,14 @@ class FakeAnalysisService:
     def dashboard_summary(self):
         return {"alerts": 0}
 
+    def system_overview(self):
+        return {
+            "health": {"api": "ok", "database": "connected"},
+            "rules": {"active": 18},
+            "records": {},
+            "security": {"session_ttl_seconds": 1800},
+        }
+
 
 class FakeDetectionService:
     def evaluate(self, **_kwargs):
@@ -251,6 +259,7 @@ def test_health_is_public_and_login_uses_oauth_password_form(api_client):
     )
     assert success.status_code == 200
     assert success.json()["token_type"] == "bearer"
+    assert success.json()["expires_in"] == 1800
     assert failure.status_code == 401
     assert failure.json()["detail"] == "Incorrect username or password."
 
@@ -280,6 +289,7 @@ def test_auth_me_returns_sorted_permissions(api_client):
         ("get", "/audit-log", "audit:view", {}),
         ("post", "/demo/seed", "upload:create", {}),
         ("get", "/users", "user:manage", {}),
+        ("get", "/admin/system-overview", "user:manage", {}),
         ("get", "/users/roles", "user:manage", {}),
         (
             "post",
@@ -320,6 +330,7 @@ def test_analyst_is_denied_admin_only_routes_and_audited(
         ("get", "/customers/C-1/transactions", {}, 200),
         ("get", "/audit-log", {}, 200),
         ("get", "/users", {}, 200),
+        ("get", "/admin/system-overview", {}, 200),
         ("get", "/users/roles", {}, 200),
         (
             "post",
@@ -342,6 +353,22 @@ def test_admin_can_use_admin_routes(
     client, _audit_rows, _alert_service = api_client
     response = getattr(client, method)(path, headers=authorization("admin"), **kwargs)
     assert response.status_code == expected_status
+
+
+def test_system_overview_is_admin_only_and_returns_summary(api_client):
+    client, _audit_rows, _alert_service = api_client
+    response = client.get(
+        "/admin/system-overview",
+        headers=authorization("admin"),
+    )
+    assert response.status_code == 200
+    assert response.json()["health"]["database"] == "connected"
+    assert response.json()["security"]["session_ttl_seconds"] == 1800
+    denied = client.get(
+        "/admin/system-overview",
+        headers=authorization("analyst"),
+    )
+    assert denied.status_code == 403
 
 
 def test_alert_status_actor_comes_from_token_not_request_body(api_client):

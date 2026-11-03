@@ -34,3 +34,6 @@ backgroundColor = "#10141B"
 secondaryBackgroundColor = "#171D27"
 textColor = "#E7EAF0"
 borderColor = "#2A303B"
+
+[browser]
+gatherUsageStats = false

@@ -112,12 +112,14 @@ class SqlAlchemyDetectionRepository:
         *,
         actor_id: int | None = None,
         automatic: bool = False,
+        started_at: datetime | None = None,
     ) -> int:
+        run_started_at = started_at or datetime.now()
         run = DetectionRun(
             run_id=run_id,
             as_of=as_of,
             status="completed",
-            completed_at=datetime.now(),
+            started_at=run_started_at,
             summary=evaluation.summary,
         )
         self._session.add(run)
@@ -236,6 +238,11 @@ class SqlAlchemyDetectionRepository:
                     },
                 )
             )
+        completed_at = datetime.now()
+        run.completed_at = completed_at
+        run.duration_ms = max(
+            0, int((completed_at - run_started_at).total_seconds() * 1000)
+        )
         try:
             self._session.commit()
         except SQLAlchemyError:

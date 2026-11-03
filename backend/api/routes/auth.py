@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 
 from backend.api.dependencies import get_auth_service, get_current_user
+from backend.security import ACCESS_TOKEN_MINUTES
 from backend.services.auth_service import AuthenticatedUser, AuthService
 
 
@@ -12,7 +13,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 def login(
     form: OAuth2PasswordRequestForm = Depends(),
     service: AuthService = Depends(get_auth_service),
-) -> dict[str, str]:
+) -> dict[str, str | int]:
     token = service.login(form.username, form.password)
     if token is None:
         raise HTTPException(
@@ -20,7 +21,11 @@ def login(
             detail="Incorrect username or password.",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return {"access_token": token, "token_type": "bearer"}
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "expires_in": ACCESS_TOKEN_MINUTES * 60,
+    }
 
 
 @router.get("/me")

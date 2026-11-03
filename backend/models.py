@@ -97,6 +97,9 @@ class Account(Base):
     account_type: Mapped[str | None] = mapped_column(String(10))
     is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     opened_at: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP")
+    )
     customer: Mapped[Customer] = relationship(back_populates="accounts")
     sent_transactions: Mapped[list["Transaction"]] = relationship(
         back_populates="sender_account", foreign_keys="Transaction.sender_account_id"
@@ -281,6 +284,7 @@ class DetectionRun(Base):
         DateTime, server_default=text("CURRENT_TIMESTAMP")
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    duration_ms: Mapped[int | None] = mapped_column(BigInteger)
     summary: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )

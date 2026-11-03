@@ -84,6 +84,7 @@ class DetectionService:
         transaction_customer_ids: set[int] | None,
         suspicious_customer_ids: set[int] | None,
     ) -> DetectionRunOutcome:
+        started_at = datetime.now()
         run_as_of = as_of or datetime.now()
         rules = self._repository.list_rules()
         rules_by_code = {rule.rule_code: rule for rule in rules}
@@ -125,6 +126,7 @@ class DetectionService:
             rules_by_code,
             actor_id=actor_id,
             automatic=automatic,
+            started_at=started_at,
         )
         logger.info("Detection run completed: %s", evaluation.summary)
         return DetectionRunOutcome(run_id, created, evaluation)

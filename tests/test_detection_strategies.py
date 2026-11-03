@@ -37,7 +37,7 @@ from backend.demo import (
     DEMO_SCENARIOS,
     _scenario_transactions,
 )
-from backend.models import Alert, AlertTransaction, RuleResult
+from backend.models import Alert, AlertTransaction, DetectionRun, RuleResult
 from backend.repositories.detection_repository import SqlAlchemyDetectionRepository
 
 
@@ -1279,11 +1279,14 @@ class DetectionStrategyTests(unittest.TestCase):
                 self.alert_rows = {}
                 self.alert_values = []
                 self.alert_transaction_values = []
+                self.detection_runs = []
                 self.next_result_id = 1
                 self.next_alert_id = 1
 
             def add(self, value):
                 self.pending.append(value)
+                if isinstance(value, DetectionRun):
+                    self.detection_runs.append(value)
 
             def add_all(self, values):
                 self.pending.extend(values)
@@ -1381,6 +1384,9 @@ class DetectionStrategyTests(unittest.TestCase):
         )
 
         self.assertEqual(first, 1)
+        first_run = session.detection_runs[0]
+        self.assertIsNotNone(first_run.completed_at)
+        self.assertGreaterEqual(first_run.duration_ms, 0)
         self.assertEqual(second, 0)
         self.assertEqual(len(session.alert_keys), 1)
         self.assertEqual(

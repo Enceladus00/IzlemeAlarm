@@ -59,7 +59,12 @@ def api_request(
         raise ApiError(f"API not reachable at {API_BASE_URL}: {exc}") from exc
     if not response.ok:
         if response.status_code == 401 and path != "/auth/login":
-            for key in ("auth_token", "permissions", "current_user"):
+            for key in (
+                "auth_token",
+                "auth_expires_at",
+                "permissions",
+                "current_user",
+            ):
                 st.session_state.pop(key, None)
             st.rerun()
         try:
