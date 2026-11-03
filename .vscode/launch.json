@@ -32,6 +32,13 @@
             "envFile": "${workspaceFolder}\\.env",
             "console": "internalConsole",
             "justMyCode": true
+        },
+        {
+            "name": "UI v2 (React)",
+            "type": "node-terminal",
+            "request": "launch",
+            "command": "npm run dev",
+            "cwd": "${workspaceFolder}/frontend-v2"
         }
     ],
     "compounds": [
@@ -40,6 +47,14 @@
             "configurations": [
                 "API (FastAPI)",
                 "UI (Streamlit)"
+            ],
+            "stopAll": true
+        },
+        {
+            "name": "Start project (API + React UI)",
+            "configurations": [
+                "API (FastAPI)",
+                "UI v2 (React)"
             ],
             "stopAll": true
         }

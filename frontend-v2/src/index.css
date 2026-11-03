@@ -1,0 +1,160 @@
+@import 'tailwindcss';
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-sans/700.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* Semantic tokens. Components use these names, never raw colours. */
+:root {
+  color-scheme: light;
+  --bg: #f3f4f6;
+  --surface: #ffffff;
+  --surface-muted: #f8f9fb;
+  --surface-hover: #f3f4f6;
+  --border: #e3e5e9;
+  --border-strong: #cfd3da;
+  --text: #14171c;
+  --text-muted: #5c6370;
+  --text-subtle: #8a909b;
+  --accent: #f5b800;
+  --accent-hover: #e0a800;
+  --accent-text: #1b1e24;
+  --accent-soft: #fff8e1;
+  --focus: #2563eb;
+  --sidebar: #1b1e24;
+  --sidebar-elevated: #262a32;
+  --sidebar-text: #e8eaee;
+  --sidebar-muted: #9aa1ad;
+  --danger: #a3261b;
+  --danger-soft: #fdecea;
+  --warning: #8f5600;
+  --warning-soft: #fff1dc;
+  --success: #1c6e45;
+  --success-soft: #e5f4ec;
+  --info: #1e4e8c;
+  --info-soft: #e6eef9;
+  --neutral-soft: #eef0f3;
+  --placeholder: #7b5cc4;
+  --placeholder-soft: #f3effc;
+  /* Chart tokens (validated with the dataviz palette validator against #ffffff). */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --chart-grid: #ebecef;
+  --chart-axis: #c9ccd3;
+  --status-critical: #d03b3b;
+  --status-serious: #ec835a;
+  --status-neutral: #8a909b;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0f1115;
+  --surface: #171a20;
+  --surface-muted: #1c2027;
+  --surface-hover: #222731;
+  --border: #2a2f39;
+  --border-strong: #3a404c;
+  --text: #eef0f4;
+  --text-muted: #a5acb8;
+  --text-subtle: #7c8492;
+  --accent: #f5b800;
+  --accent-hover: #ffc929;
+  --accent-text: #1b1e24;
+  --accent-soft: #2b2512;
+  --focus: #6ea2ff;
+  --sidebar: #0b0d10;
+  --sidebar-elevated: #1a1d23;
+  --sidebar-text: #e8eaee;
+  --sidebar-muted: #8a919d;
+  --danger: #ff8a7f;
+  --danger-soft: #3a1c1a;
+  --warning: #f5b65c;
+  --warning-soft: #352713;
+  --success: #6fd3a0;
+  --success-soft: #16301f;
+  --info: #8db8f5;
+  --info-soft: #172741;
+  --neutral-soft: #252a33;
+  --placeholder: #b9a2f0;
+  --placeholder-soft: #261f3a;
+  /* Dark steps of the same hues (validated against #171a20). */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --chart-grid: #252a33;
+  --chart-axis: #3a404c;
+  --status-critical: #d03b3b;
+  --status-serious: #ec835a;
+  --status-neutral: #7c8492;
+}
+
+@theme inline {
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--text);
+  --color-muted: var(--text-muted);
+  --color-subtle: var(--text-subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-text);
+  --color-accent-soft: var(--accent-soft);
+  --color-focus: var(--focus);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-elevated: var(--sidebar-elevated);
+  --color-sidebar-fg: var(--sidebar-text);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-neutral-soft: var(--neutral-soft);
+  --color-placeholder: var(--placeholder);
+  --color-placeholder-soft: var(--placeholder-soft);
+  --color-series-1: var(--series-1);
+  --color-series-2: var(--series-2);
+  --color-chart-grid: var(--chart-grid);
+  --color-chart-axis: var(--chart-axis);
+  --color-status-critical: var(--status-critical);
+  --color-status-serious: var(--status-serious);
+  --color-status-neutral: var(--status-neutral);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

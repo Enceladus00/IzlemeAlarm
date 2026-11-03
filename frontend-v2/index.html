@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Sentinel · İşlem İzleme ve Alarm</title>
+    <script>
+      // Apply the saved theme and language before first paint to avoid a flash.
+      try {
+        var theme = localStorage.getItem('sentinel.theme');
+        if (theme === 'dark' || theme === 'light') document.documentElement.dataset.theme = theme;
+        else document.documentElement.dataset.theme = 'light';
+        var lang = localStorage.getItem('sentinel.lang');
+        if (lang === 'en' || lang === 'tr') document.documentElement.lang = lang;
+      } catch (e) {
+        document.documentElement.dataset.theme = 'light';
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -65,6 +65,23 @@ Open the project root, select the `.venv` Python interpreter, and press `F5`
 on **Start project (API + UI)** in **Run and Debug**. The API is at
 `http://127.0.0.1:8000/docs`; Streamlit opens the UI in a browser.
 
+## React interface (preview)
+
+A React rewrite of the UI is being built in [`frontend-v2/`](./frontend-v2/README.md)
+alongside the Streamlit UI, which remains fully available. It uses the same
+API and requires Node.js 20 or newer:
+
+```powershell
+cd frontend-v2
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`. The dev server forwards `/api/*` to the API at
+`http://127.0.0.1:8000`, so no CORS change is needed. In VS Code, use
+**Start project (API + React UI)**. Screens not yet migrated show an
+"under construction" notice; use Streamlit for those.
+
 ## Screens and demo
 
 Use the sidebar to switch between:
