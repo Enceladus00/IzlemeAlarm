@@ -1,6 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/api/client';
-import { MAX_UPLOAD_BYTES, uploadReportSchema, uploadResultSchema, type UploadEntity, type UploadRowError } from '@/api/schemas/uploads';
+import {
+  MAX_UPLOAD_BYTES,
+  uploadHistorySchema,
+  uploadReportSchema,
+  uploadResultSchema,
+  type UploadEntity,
+  type UploadRowError,
+} from '@/api/schemas/uploads';
 import { toCsv } from '@/utils/csv';
 
 /** Same templates as frontend/app_pages/data_upload.py. */
@@ -33,6 +40,7 @@ export function useUploadCsv() {
       void queryClient.invalidateQueries({ queryKey: ['admin'] });
       void queryClient.invalidateQueries({ queryKey: ['demo'] });
       void queryClient.invalidateQueries({ queryKey: ['uploads', result.batch_id] });
+      void queryClient.invalidateQueries({ queryKey: ['uploads', 'list'] });
       if (entity === 'transaction') {
         void queryClient.invalidateQueries({ queryKey: ['alerts'] });
         void queryClient.invalidateQueries({ queryKey: ['transactions'] });
@@ -47,6 +55,15 @@ export function useUploadReport(batchId: number | null) {
     queryKey: ['uploads', batchId],
     queryFn: ({ signal }) => apiRequest(`/uploads/${batchId}`, { schema: uploadReportSchema, signal }),
     enabled: batchId !== null,
+  });
+}
+
+/** GET /uploads — the latest uploads, newest first (upload:view). */
+export function useUploadHistory(enabled: boolean) {
+  return useQuery({
+    queryKey: ['uploads', 'list'],
+    queryFn: ({ signal }) => apiRequest('/uploads', { query: { limit: 20 }, schema: uploadHistorySchema, signal }),
+    enabled,
   });
 }
 

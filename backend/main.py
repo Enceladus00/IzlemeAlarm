@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from backend.api.routes.alerts import router as alerts_router
 from backend.api.routes.auth import router as auth_router
+from backend.api.routes.customers import router as customers_router
 from backend.api.routes.audit import router as audit_router
 from backend.api.routes.analysis import router as analysis_router
 from backend.api.routes.rules import router as rules_router
@@ -38,6 +39,7 @@ def create_app() -> FastAPI:
     application.include_router(alerts_router)
     application.include_router(rules_router)
     application.include_router(transactions_router)
+    application.include_router(customers_router)
     application.include_router(uploads_router)
     application.include_router(users_router)
 

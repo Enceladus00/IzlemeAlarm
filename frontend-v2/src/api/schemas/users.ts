@@ -23,6 +23,9 @@ export const PASSWORD_MAX_BYTES = 72;
 export const auditEventSchema = z.object({
   audit_id: z.number(),
   actor_id: z.number().nullable(),
+  /** From the server (K10); null for system events. */
+  actor_name: z.string().nullable(),
+  actor_role: z.string().nullable(),
   action: z.string(),
   entity_type: z.string(),
   entity_id: z.string().nullable(),

@@ -9,6 +9,15 @@ class RuleUpdate(BaseModel):
     is_active: bool
     thresholds: dict[str, Any]
     weight: Decimal | None = Field(default=None, ge=0, le=1)
+    # K5: every rule change needs a reason (written to the audit log).
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def reject_blank_reason(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A change reason is required.")
+        return value.strip()
 
     @field_validator("weight", mode="before")
     @classmethod
@@ -18,9 +27,32 @@ class RuleUpdate(BaseModel):
         return value
 
 
+AlertStatus = Literal["new", "in_review", "closed", "confirmed_suspicious"]
+
+
 class AlertStatusUpdate(BaseModel):
-    status: Literal["new", "in_review", "closed", "confirmed_suspicious"]
+    status: AlertStatus
     note: str | None = Field(default=None, max_length=2000)
+
+
+class AlertDecisionRequest(BaseModel):
+    alert_ids: list[int] = Field(min_length=1, max_length=50)
+    status: AlertStatus
+    note: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("alert_ids")
+    @classmethod
+    def reject_duplicate_ids(cls, value: list[int]) -> list[int]:
+        if len(set(value)) != len(value):
+            raise ValueError("Alert IDs must be unique.")
+        return value
+
+    @field_validator("note")
+    @classmethod
+    def reject_blank_note(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A note is required for every alert decision.")
+        return value
 
 
 class UserCreate(BaseModel):

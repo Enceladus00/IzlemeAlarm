@@ -15,6 +15,7 @@ function trendDays(): DashboardSummary['trends'] {
 }
 
 export const dashboardFixture: DashboardSummary = {
+  days: 30,
   customers: 1284,
   accounts: 2317,
   transactions: 186420,
@@ -27,6 +28,7 @@ export const dashboardFixture: DashboardSummary = {
 };
 
 export const emptyDashboardFixture: DashboardSummary = {
+  days: 30,
   customers: 0,
   accounts: 0,
   transactions: 0,
@@ -71,7 +73,7 @@ export const latestAlertsFixture: AlertPage = {
 };
 
 export const systemOverviewFixture: SystemOverview = {
-  health: { api: 'ok', database: 'connected', database_latency_ms: 2.1, schema_revision: '0005_system_overview_metrics' },
+  health: { api: 'ok', database: 'connected', database_latency_ms: 2.1, schema_revision: '0006_alert_workflow', schema_head: '0006_alert_workflow' },
   rules: { active: 18, last_run_at: '2026-10-29T18:42:00', last_run_status: 'completed', last_run_duration_ms: 2400 },
   records: {
     customers: { total: 1284, added_last_7_days: 96, last_added_at: '2026-10-29T18:21:00' },

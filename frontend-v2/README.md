@@ -91,23 +91,15 @@ src/
 
 ## Placeholders
 
-These design elements have no data source in the API today. Each is shown
-with the `<Placeholder>` marker; filling them would need API changes.
+All earlier placeholders are now backed by the API (design document v0.6):
+the alert queue is grouped, searched and paged on the server
+(`GET /alerts/queue`), the personal KPI cards use `GET /dashboard/my-summary`,
+alert history shows who made each change, decisions go through
+`POST /alerts/decisions`, and the system overview compares `schema_revision`
+with `schema_head`. The `<Placeholder>` component remains for future gaps.
 
-| Screen | Element | What the API would need to provide |
-| --- | --- | --- |
-| Alert queue | "Bugün kararlaştırdığım" (decided by me today) | Who changed an alert's status (actor on alert history) |
-| Alert queue | "Bana geri gönderilen" (sent back to me) | An assignment / send-back workflow |
-| Alert queue | "Son işlem yapan" (last actor) column | Actor on alert history |
-| Alert queue | Customer type under each customer | `customer_type` in the alert summary |
-| Alert detail | "İşlemi yapan" in the analyst history | Actor on alert history |
-| System overview | Schema "Güncel" (up to date) | Whether the revision is the latest migration |
+Remaining API limits the UI works around:
 
-Other API limits the UI works around:
-
-- Customer search in the alert queue matches the loaded alerts only; the API
-  filters by exact customer number, not by name.
 - Every alert filter takes one value (no multi-select).
-- Upload reports are looked up by batch number; there is no upload history list.
-- The audit log has no server-side filters; actor names are resolved through
-  `/users` when the viewer has `user:manage`, otherwise the actor id is shown.
+- The flow diagram uses masked account labels from `GET /transactions/summary`
+  (top 200 routes by amount); counterparty names are not sent (K12).

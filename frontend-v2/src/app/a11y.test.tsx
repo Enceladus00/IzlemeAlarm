@@ -23,18 +23,21 @@ async function expectNoViolations() {
 
 beforeEach(() => {
   server.use(
-    alertsHandler(),
+    ...alertsHandler(),
     http.get(`${API}/alerts/rule-codes`, () => HttpResponse.json(['R01', 'R02', 'R03'])),
     http.get(`${API}/alerts/5518`, () => HttpResponse.json(alertDetail(queueAlerts[0]!))),
     http.get(`${API}/transactions`, () => HttpResponse.json({ total: 1, items: [{ ...sampleTransaction, alert_linked: true }] })),
     http.get(`${API}/rules`, () => HttpResponse.json(ruleFixtures)),
+    http.get(`${API}/customers`, () =>
+      HttpResponse.json({ total: 1, items: [{ customer_no: 'C-1042', full_name: 'Ahmet Yılmaz', customer_type: 'BIREYSEL', risk_level: 'medium', is_active: true, account_count: 1, open_alert_count: 0 }] }),
+    ),
     http.get(`${API}/demo/status`, () =>
       HttpResponse.json({ seeded: false, fixture_ready: false, customers: 0, accounts: 0, transactions: 0, customer_rows: [], account_rows: [], transaction_rows: [], scenarios: [], seed_enabled: true }),
     ),
     http.get(`${API}/users`, () => HttpResponse.json([{ user_id: 1, username: 'admin', role_code: 'admin', is_active: true, created_at: null }])),
     http.get(`${API}/users/roles`, () => HttpResponse.json([{ role_code: 'admin', name: 'Admin' }])),
     http.get(`${API}/audit-log`, () =>
-      HttpResponse.json({ total: 1, items: [{ audit_id: 1, actor_id: 1, action: 'LOGIN_SUCCESS', entity_type: 'auth', entity_id: '1', details: { username: 'admin' }, created_at: '2026-11-03T10:00:00' }] }),
+      HttpResponse.json({ total: 1, items: [{ audit_id: 1, actor_id: 1, actor_name: 'admin', actor_role: 'admin', action: 'LOGIN_SUCCESS', entity_type: 'auth', entity_id: '1', details: { username: 'admin' }, created_at: '2026-11-03T10:00:00' }] }),
     ),
   );
 });
@@ -52,13 +55,15 @@ describe('accessibility (axe-core, WCAG 2.1 A/AA)', () => {
     ['/alerts', 'Alarm kuyruğu'],
     ['/alerts/5518', /Alarm #5518/],
     ['/transactions', 'İşlem analizi'],
+    ['/customers', 'Müşteriler'],
     ['/data', 'Veri yönetimi'],
     ['/demo', 'Demo laboratuvarı'],
     ['/rules?rule=R01', 'Kural yönetimi'],
     ['/users', 'Kullanıcı yönetimi'],
     ['/audit', 'Denetim kaydı'],
   ] as const)('%s', async (path, heading) => {
-    storeSession('admin');
+    // The administrator has no alert or customer access (K13).
+    storeSession(path.startsWith('/alerts') ? 'ayse.karaca' : path === '/transactions' ? 'mehmet.ozturk' : 'admin');
     renderApp(path);
     await screen.findByRole('heading', { level: 1, name: heading });
     // Let data-dependent sections render before auditing.

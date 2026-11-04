@@ -36,7 +36,13 @@ def upgrade() -> None:
             )
     else:
         schema_file = Path(__file__).resolve().parents[2] / "database" / "V1__initial_schema.sql"
-        bind.exec_driver_sql(schema_file.read_text(encoding="utf-8"))
+        # Raw DB-API cursor: the schema file contains '%' characters that the
+        # driver would otherwise treat as parameter placeholders.
+        cursor = bind.connection.dbapi_connection.cursor()
+        try:
+            cursor.execute(schema_file.read_text(encoding="utf-8"))
+        finally:
+            cursor.close()
     bind.execute(
         text(
             "INSERT INTO app_user (username, password_hash, role) "

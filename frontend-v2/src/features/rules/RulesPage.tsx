@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 import { compareRuleCodes } from '@/api/schemas/alerts';
 import { CUSTOMER_TYPES, PARAMETER_STATUSES, type CustomerType, type ParameterStatus, type Rule } from '@/api/schemas/rules';
+import { REASON_MAX_LENGTH } from '@/api/schemas/rules';
 import { useAuth } from '@/auth/auth-context';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -13,12 +14,13 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import { Field } from '@/components/ui/Field';
 import { InlineAlert } from '@/components/ui/InlineAlert';
 import { Input } from '@/components/ui/Input';
+import { Textarea } from '@/components/ui/Select';
 import { PageHeader } from '@/components/ui/PageHeader';
 import { Select } from '@/components/ui/Select';
 import { PageSpinner } from '@/components/ui/Spinner';
 import { cn } from '@/utils/cn';
 import { useRules, useUpdateRule } from './api';
-import { buildRuleUpdate, draftFromRule, type DraftErrors, type RuleDraft } from './model';
+import { buildRuleUpdate, copyIndividualToCorporate, draftFromRule, type DraftErrors, type RuleDraft } from './model';
 import { ParameterFields } from './ParameterFields';
 import { useFieldErrorText } from './useFieldErrorText';
 
@@ -270,6 +272,19 @@ function RuleEditor({ rule }: { rule: Rule }) {
         </div>
       </Card>
 
+      {canEdit && (
+        <div className="flex justify-end">
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setDraft(copyIndividualToCorporate(draft))}
+            title={t('rules.copyIndividualHint')}
+          >
+            {t('rules.copyIndividual')}
+          </Button>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-4 2xl:grid-cols-2">
         {CUSTOMER_TYPES.map((type) => {
           const typeDraft = draft.types[type];
@@ -310,6 +325,28 @@ function RuleEditor({ rule }: { rule: Rule }) {
           );
         })}
       </div>
+
+      {canEdit && (
+        <Card className="p-5">
+          <Field
+            label={
+              <>
+                {t('rules.reason')}
+                <span className="text-danger"> *</span>
+              </>
+            }
+            hint={t('rules.reasonHint', { count: draft.reason.length, max: REASON_MAX_LENGTH })}
+            error={errorText(errors.reason)}
+          >
+            <Textarea
+              rows={2}
+              maxLength={REASON_MAX_LENGTH}
+              value={draft.reason}
+              onChange={(event) => setDraft({ ...draft, reason: event.target.value })}
+            />
+          </Field>
+        </Card>
+      )}
 
       {canEdit && (
         <div className="sticky bottom-0 z-10 -mx-1 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-surface/95 px-4 py-3 shadow-lg backdrop-blur">
@@ -359,6 +396,7 @@ function RuleHeading({ rule }: { rule: Rule }) {
         <Badge tone={rule.is_active ? 'success' : 'neutral'} dot>
           {rule.is_active ? t('rules.active') : t('rules.inactive')}
         </Badge>
+        {rule.metadata?.alert_mode === 'SIGNAL_ONLY' && <Badge tone="neutral">{t('rules.signalOnly')}</Badge>}
       </div>
       {rule.description && <p className="mt-1 text-[13px] text-muted">{rule.description}</p>}
     </div>

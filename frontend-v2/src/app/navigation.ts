@@ -1,6 +1,7 @@
 import {
   Activity,
   BellRing,
+  Contact,
   FlaskConical,
   GitBranch,
   History,
@@ -18,6 +19,7 @@ export type NavId =
   | 'detectionOverview'
   | 'alerts'
   | 'transactions'
+  | 'customers'
   | 'dataManagement'
   | 'demoLab'
   | 'rules'
@@ -32,8 +34,8 @@ export interface NavItem {
   icon: LucideIcon;
   /** The user needs at least one of these to see and open the screen. */
   anyOf: readonly Permission[];
-  /** Permission that unlocks editing; without it the item is marked read-only. */
-  editPermission?: Permission;
+  /** Permissions that unlock editing; without any of them the item is marked read-only. */
+  editPermission?: Permission | readonly Permission[];
 }
 
 /**
@@ -42,8 +44,9 @@ export interface NavItem {
  */
 export const NAV_ITEMS: readonly NavItem[] = [
   { id: 'detectionOverview', path: '/overview', section: 'monitoring', icon: LayoutDashboard, anyOf: ['dashboard:view'] },
-  { id: 'alerts', path: '/alerts', section: 'monitoring', icon: BellRing, anyOf: ['alert:view'], editPermission: 'alert:update' },
+  { id: 'alerts', path: '/alerts', section: 'monitoring', icon: BellRing, anyOf: ['alert:view'], editPermission: ['alert:update', 'alert:escalate', 'alert:confirm'] },
   { id: 'transactions', path: '/transactions', section: 'monitoring', icon: GitBranch, anyOf: ['customer:view'] },
+  { id: 'customers', path: '/customers', section: 'monitoring', icon: Contact, anyOf: ['customer:view'] },
   { id: 'dataManagement', path: '/data', section: 'operations', icon: Upload, anyOf: ['upload:create', 'upload:view'] },
   { id: 'demoLab', path: '/demo', section: 'operations', icon: FlaskConical, anyOf: ['dashboard:view'] },
   { id: 'rules', path: '/rules', section: 'operations', icon: SlidersHorizontal, anyOf: ['rule:view'], editPermission: 'rule:edit' },
@@ -59,7 +62,10 @@ export function canOpen(item: NavItem, permissions: PermissionSet): boolean {
 }
 
 export function isReadOnly(item: NavItem, permissions: PermissionSet): boolean {
-  return item.editPermission !== undefined && !permissions.has(item.editPermission);
+  if (item.editPermission === undefined) return false;
+  const required: readonly Permission[] =
+    typeof item.editPermission === 'string' ? [item.editPermission] : item.editPermission;
+  return !hasAnyPermission(permissions, required);
 }
 
 export function visibleNavItems(permissions: PermissionSet): NavItem[] {

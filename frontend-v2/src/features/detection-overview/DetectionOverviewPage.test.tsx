@@ -1,12 +1,12 @@
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
-import { emptyDashboardFixture } from '@/test/fixtures';
+import { dashboardFixture, emptyDashboardFixture } from '@/test/fixtures';
 import { renderApp, storeSession } from '@/test/render';
 import { API, server } from '@/test/server';
 
 describe('Detection overview', () => {
   it('shows locale-formatted KPIs, severity, rules and latest alerts', async () => {
-    storeSession('admin');
+    storeSession('mehmet.ozturk');
     renderApp('/overview');
 
     expect(await screen.findByText('186.420')).toBeInTheDocument();
@@ -25,7 +25,7 @@ describe('Detection overview', () => {
 
     expect(await screen.findByText('Ahmet Yılmaz')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '#5531' })).toHaveAttribute('href', '/alerts?alert=5531');
-    expect(screen.getByText('İncelemede')).toBeInTheDocument();
+    expect(screen.getByText('Uyum onayında')).toBeInTheDocument();
     expect(screen.getByText('26.10.2026 16:40')).toBeInTheDocument();
   });
 
@@ -46,7 +46,7 @@ describe('Detection overview', () => {
         return HttpResponse.json({ created_alerts: 4 });
       }),
     );
-    storeSession('admin');
+    storeSession('mehmet.ozturk');
     const { user } = renderApp('/overview');
     await user.click(await screen.findByRole('button', { name: 'Kuralları şimdi çalıştır' }));
     expect(await screen.findByText('Değerlendirme tamamlandı: 4 yeni alarm oluşturuldu.')).toBeInTheDocument();
@@ -80,7 +80,7 @@ describe('Detection overview', () => {
       http.get(`${API}/dashboard/summary`, () => HttpResponse.json(emptyDashboardFixture)),
       http.get(`${API}/alerts`, () => HttpResponse.json({ total: 0, items: [] })),
     );
-    storeSession('admin');
+    storeSession('mehmet.ozturk');
     renderApp('/overview');
     expect(await screen.findByText('Henüz alarm üretilmedi.')).toBeInTheDocument();
     expect(screen.getByText('Henüz alarm üreten kural yok.')).toBeInTheDocument();
@@ -95,11 +95,55 @@ describe('Detection overview', () => {
         fail ? HttpResponse.json({ detail: 'Could not load dashboard.' }, { status: 503 }) : undefined,
       ),
     );
-    storeSession('admin');
+    storeSession('mehmet.ozturk');
     const { user } = renderApp('/overview');
-    expect(await screen.findByText(/Hizmet geçici olarak kullanılamıyor/)).toBeInTheDocument();
+    expect(await screen.findByText('Genel bakış yüklenemedi.')).toBeInTheDocument();
     fail = false;
     await user.click(screen.getByRole('button', { name: 'Yeniden dene' }));
     expect(await screen.findByText('186.420')).toBeInTheDocument();
+  });
+
+  it('loads only the summary first, other tabs on demand, and re-queries the period (K3)', async () => {
+    const requests: string[] = [];
+    server.use(
+      http.get(`${API}/dashboard/summary`, ({ request }) => {
+        requests.push(`summary?${new URL(request.url).searchParams}`);
+        return HttpResponse.json({ ...dashboardFixture, days: Number(new URL(request.url).searchParams.get('days')) });
+      }),
+      http.get(`${API}/dashboard/funnel`, ({ request }) => {
+        requests.push(`funnel?${new URL(request.url).searchParams}`);
+        return HttpResponse.json({
+          days: 30,
+          created: 10,
+          analyst_closed: 6,
+          analyst_open: 2,
+          escalated: 2,
+          escalation_outcome: { confirmed: 1, closed: 0, returned: 1, pending: 0 },
+        });
+      }),
+      http.get(`${API}/dashboard/rule-performance`, ({ request }) => {
+        requests.push(`rules?${new URL(request.url).searchParams}`);
+        return HttpResponse.json([
+          { rule_code: 'R05', name: 'Olağandışı tutar', is_active: true, evaluated: 1830, alerts: 42, avg_alert_score: '0.7811', confirmed: 6, closed: 30, hit_rate: 0.167, provisional: true },
+        ]);
+      }),
+    );
+    storeSession('mehmet.ozturk');
+    const { user } = renderApp('/overview');
+    expect(await screen.findByText('186.420')).toBeInTheDocument();
+    expect(requests).toEqual(['summary?days=30']);
+
+    await user.click(screen.getByRole('tab', { name: 'Alarm akışı' }));
+    expect(await screen.findByText('Analist kapattı')).toBeInTheDocument();
+    expect(requests).toEqual(['summary?days=30', 'funnel?days=30']);
+
+    await user.click(screen.getByRole('tab', { name: 'Kurallar' }));
+    const table = await screen.findByRole('table', { name: 'Kural başarımı · son 30 gün' });
+    expect(within(table).getByText('%16,7')).toBeInTheDocument();
+    expect(within(table).getByText('Geçici')).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('Dönem'), '7');
+    await waitFor(() => expect(requests).toContain('rules?days=7'));
+    expect(requests.some((item) => item.startsWith('summary?days=7'))).toBe(false);
   });
 });

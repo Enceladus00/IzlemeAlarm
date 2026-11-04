@@ -81,6 +81,7 @@ class RuleService:
         is_active: bool,
         actor_id: int,
         weight: Decimal | None = None,
+        reason: str = "",
     ) -> dict[str, Any]:
         rule: MonitoringRule | None = self._repository.get_rule(rule_code)
         if rule is None:
@@ -106,7 +107,7 @@ class RuleService:
         ):
             raise InvalidRuleThresholds("Rule weight must be between 0 and 1.")
         self._repository.save_rule(
-            rule, normalized_thresholds, is_active, normalized_weight, actor_id
+            rule, normalized_thresholds, is_active, normalized_weight, actor_id, reason
         )
         return {
             "rule_code": rule.rule_code,

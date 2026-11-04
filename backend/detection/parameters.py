@@ -410,6 +410,146 @@ class R15Values(WindowParameters, CashAccountParameters):
         return value
 
 
+
+# --- R16, S1, S2, R17, R18 (API design 7.12) ---------------------------------
+
+
+class R16Values(CurrencyLimits, CountScoreParameters, WindowParameters):
+    """Listed countries: ln(T / E) of the volume with listed countries."""
+
+    countries: list[str]
+
+    @field_validator("countries")
+    @classmethod
+    def validate_countries(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("At least one listed country is required.")
+        if any(
+            len(code) != 2 or not code.isascii() or not code.isalpha() or code != code.upper()
+            for code in value
+        ):
+            raise ValueError("Countries must be two-letter uppercase ISO 3166 codes.")
+        if len(set(value)) != len(value):
+            raise ValueError("Countries must be unique.")
+        return value
+
+
+class RatioScoreParameters(CountScoreParameters):
+    """x_esik / x_kesin that are shares between 0 and 1."""
+
+    @field_validator("x_esik", "x_kesin")
+    @classmethod
+    def validate_ratio_range(cls, value: Decimal) -> Decimal:
+        if value < 0 or value > 1:
+            raise ValueError("Ratio thresholds must be between 0 and 1.")
+        return value
+
+
+class S1Values(CurrencyLimits, RatioScoreParameters, WindowParameters):
+    """Round amounts. limits = B (big amount per currency)."""
+
+    window_days: int = Field(default=30, gt=0)
+    round_unit: Decimal = Field(gt=0)
+    min_count: int = Field(ge=1)
+
+    @field_validator("round_unit", "min_count", mode="before")
+    @classmethod
+    def reject_boolean_values(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("Expected a numeric value.")
+        return value
+
+    @field_validator("round_unit")
+    @classmethod
+    def validate_finite_unit(cls, value: Decimal) -> Decimal:
+        if not value.is_finite():
+            raise ValueError("Values must be finite.")
+        return value
+
+
+class S2Values(CountScoreParameters, WindowParameters, CashAccountParameters):
+    """Hub account: robust z of distinct counterparties within the customer type."""
+
+    window_days: int = Field(default=30, gt=0)
+    mad_floor: Decimal = Field(gt=0)
+
+    @field_validator("mad_floor", mode="before")
+    @classmethod
+    def reject_boolean_floor(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("Expected a numeric value.")
+        return value
+
+    @field_validator("mad_floor")
+    @classmethod
+    def validate_finite_floor(cls, value: Decimal) -> Decimal:
+        if not value.is_finite():
+            raise ValueError("Values must be finite.")
+        return value
+
+
+OpenAlertStatus = Literal["new", "in_review"]
+
+
+class R17Values(WindowParameters):
+    """Multiple alerts: raise the severity of open alerts one step."""
+
+    window_days: int = Field(default=30, gt=0)
+    min_rules: int = Field(ge=2)
+    excluded_rules: list[str] = Field(default_factory=lambda: ["R02", "R17", "R18"])
+    open_statuses: list[OpenAlertStatus] = Field(default_factory=lambda: ["new", "in_review"])
+
+    @field_validator("min_rules", mode="before")
+    @classmethod
+    def reject_boolean_min_rules(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("Expected a whole number.")
+        return value
+
+    @field_validator("excluded_rules")
+    @classmethod
+    def validate_rule_codes(cls, value: list[str]) -> list[str]:
+        from backend.detection.registry import load_rule_registry  # avoid import cycle
+
+        known = set(load_rule_registry())
+        unknown = sorted(set(value) - known)
+        if unknown:
+            raise ValueError(f"Unknown rule codes: {', '.join(unknown)}")
+        if len(set(value)) != len(value):
+            raise ValueError("Rule codes must be unique.")
+        return value
+
+    @field_validator("open_statuses")
+    @classmethod
+    def validate_open_statuses(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("At least one open status is required.")
+        if len(set(value)) != len(value):
+            raise ValueError("Statuses must be unique.")
+        return value
+
+
+class R18Values(RuleParameterValues):
+    """Combined risk score A = min(1, (sum u_i^p)^(1/p))."""
+
+    p: Decimal = Field(default=Decimal("4"), ge=1)
+    alert_threshold: Decimal = Field(default=Decimal("0.5"), gt=0, le=1)
+
+    @field_validator("p", "alert_threshold", mode="before")
+    @classmethod
+    def reject_boolean_numbers(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("Expected a numeric value.")
+        return value
+
+    @field_validator("p", "alert_threshold")
+    @classmethod
+    def validate_finite_numbers(cls, value: Decimal) -> Decimal:
+        if not value.is_finite():
+            raise ValueError("Values must be finite.")
+        return value
+
+
 def validate_rule_parameters(
     rule_code: str,
     values_model: type[RuleParameterValues],

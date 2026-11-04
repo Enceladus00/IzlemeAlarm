@@ -1,15 +1,30 @@
-import { ADMIN_PERMISSIONS, ANALYST_PERMISSIONS } from '@/test/server';
+import { ADMIN_PERMISSIONS, ANALYST_PERMISSIONS, COMPLIANCE_PERMISSIONS } from '@/test/server';
 import { homePath, isReadOnly, NAV_ITEMS, visibleNavItems } from './navigation';
 
 const ids = (permissions: string[]) => visibleNavItems(new Set(permissions)).map((item) => item.id);
 
 describe('permission-aware navigation (parity with frontend/app.py)', () => {
-  it('shows every screen to an administrator', () => {
+  it('shows every screen to an administrator (all permissions during development)', () => {
     expect(ids(ADMIN_PERMISSIONS)).toHaveLength(NAV_ITEMS.length);
   });
 
-  it('limits the seeded analyst role to overview, alerts and the demo lab', () => {
-    expect(ids(ANALYST_PERMISSIONS)).toEqual(['detectionOverview', 'alerts', 'demoLab']);
+  it('gives the analyst role overview, alerts, the demo lab and read-only rules', () => {
+    expect(ids(ANALYST_PERMISSIONS)).toEqual(['detectionOverview', 'alerts', 'demoLab', 'rules']);
+  });
+
+  it('gives compliance officers alerts, transaction analysis, rules and the audit log', () => {
+    expect(ids(COMPLIANCE_PERMISSIONS)).toEqual([
+      'detectionOverview',
+      'alerts',
+      'transactions',
+      'customers',
+      'demoLab',
+      'rules',
+      'audit',
+    ]);
+    const alerts = NAV_ITEMS.find((item) => item.id === 'alerts')!;
+    expect(isReadOnly(alerts, new Set(COMPLIANCE_PERMISSIONS))).toBe(false);
+    expect(isReadOnly(alerts, new Set(['alert:view']))).toBe(true);
   });
 
   it('opens data management with either upload permission', () => {

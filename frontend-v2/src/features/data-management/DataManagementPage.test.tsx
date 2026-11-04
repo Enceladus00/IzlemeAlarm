@@ -33,7 +33,7 @@ beforeEach(() => {
       uploads.push({ entity: new URL(request.url).searchParams.get('entity'), fileName: file?.name ?? null, content: (await file?.text()) ?? '' });
       return HttpResponse.json(uploadResult);
     }),
-    http.get(`${API}/uploads/7`, () => HttpResponse.json({ ...uploadResult, file_name: 'customers.csv', uploaded_at: '2026-11-02T09:30:00' })),
+    http.get(`${API}/uploads/7`, () => HttpResponse.json({ ...uploadResult, file_name: 'customers.csv', uploaded_at: '2026-11-02T09:30:00', own_upload: true })),
     http.get(`${API}/uploads/99`, () => HttpResponse.json({ detail: 'Upload batch not found.' }, { status: 404 })),
   );
 });
@@ -127,5 +127,36 @@ describe('rejectionCsv', () => {
     expect(rejectionCsv(uploadResult.errors)).toBe(
       'row_number,reason,customer_no,full_name\r\n3,customer_no already exists,C-1,"Ayşe, ""AK"""\r\n4,full_name is required,C-2,\r\n',
     );
+  });
+
+  it('lists recent uploads, opens a report from the list and hides other users’ row data (K13)', async () => {
+    server.use(
+      http.get(`${API}/uploads`, () =>
+        HttpResponse.json([
+          { batch_id: 12, entity_type: 'customer', file_name: 'b.csv', total_rows: 2, accepted_rows: 1, rejected_rows: 1, uploaded_at: '2026-11-03T09:00:00', uploaded_by_name: 'veri.yukleyici' },
+        ]),
+      ),
+      http.get(`${API}/uploads/12`, () =>
+        HttpResponse.json({
+          batch_id: 12,
+          entity_type: 'customer',
+          file_name: 'b.csv',
+          total_rows: 2,
+          accepted_rows: 1,
+          rejected_rows: 1,
+          uploaded_at: '2026-11-03T09:00:00',
+          own_upload: false,
+          errors: [{ row_number: 2, reason: 'monthly_income must be positive', row_data: null }],
+        }),
+      ),
+    );
+    storeSession('admin');
+    const { user } = renderApp('/data');
+    const history = await screen.findByRole('table', { name: 'Yükleme geçmişi' });
+    expect(within(history).getByText('veri.yukleyici')).toBeInTheDocument();
+    await user.click(within(history).getByRole('button', { name: '#12' }));
+    expect(await screen.findByText('monthly_income must be positive')).toBeInTheDocument();
+    expect(screen.getByText(/reddedilen satırların içeriği gösterilmez/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Ret raporunu indir|Reddedilen satırları indir/ })).not.toBeInTheDocument();
   });
 });

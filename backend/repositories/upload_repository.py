@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from backend.models import (
+    AppUser,
     Account,
     AuditLog,
     Customer,
@@ -103,3 +104,14 @@ class SqlAlchemyUploadRepository:
             .where(UploadBatch.batch_id == batch_id)
             .options(selectinload(UploadBatch.errors))
         )
+
+    def list_batches(self, entity: str | None, limit: int) -> list[tuple[UploadBatch, str | None]]:
+        query = (
+            select(UploadBatch, AppUser.username)
+            .outerjoin(AppUser, AppUser.user_id == UploadBatch.uploaded_by)
+            .order_by(UploadBatch.uploaded_at.desc(), UploadBatch.batch_id.desc())
+            .limit(limit)
+        )
+        if entity:
+            query = query.where(UploadBatch.entity_type == entity)
+        return [(row[0], row[1]) for row in self._session.execute(query).all()]

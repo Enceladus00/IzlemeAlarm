@@ -24,7 +24,7 @@ function ruleList() {
 
 describe('Rule management', () => {
   it('lists registered rules in natural order, then legacy rules', async () => {
-    storeSession('admin');
+    storeSession('mehmet.ozturk');
     renderApp('/rules');
     await screen.findByRole('heading', { name: /R01 — Near-limit activity/ });
     const codes = within(ruleList()).getAllByRole('button').map((button) => /^R\d+/.exec(button.textContent!)![0]);
@@ -33,7 +33,7 @@ describe('Rule management', () => {
   });
 
   it('edits limits and saves the exact payload', async () => {
-    storeSession('admin');
+    storeSession('mehmet.ozturk');
     const { user, router } = renderApp('/rules');
     const list = await screen.findByRole('navigation', { name: 'Kurallar' });
     await user.click(within(list).getByRole('button', { name: /R02/ }));
@@ -44,6 +44,10 @@ describe('Rule management', () => {
     await user.clear(screen.getByLabelText('Birleşik risk ağırlığı'));
     await user.type(screen.getByLabelText('Birleşik risk ağırlığı'), '0.5');
     expect(screen.getByText('Kaydedilmemiş değişiklikler var.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Kural ayarlarını kaydet' }));
+    expect(await screen.findByText('Değişiklik gerekçesi zorunlu.')).toBeInTheDocument();
+    expect(puts).toHaveLength(0);
+    await user.type(screen.getByLabelText(/Değişiklik gerekçesi/), 'Kurum onayı 2026/14');
     await user.click(screen.getByRole('button', { name: 'Kural ayarlarını kaydet' }));
 
     await waitFor(() => expect(puts).toHaveLength(1));
@@ -56,12 +60,13 @@ describe('Rule management', () => {
           BIREYSEL: { status: 'APPROVED', values: { limits: { TRY: 50000, USD: 1500 } } },
           KURUMSAL: { status: 'UNSET', values: {} },
         },
+        reason: 'Kurum onayı 2026/14',
       },
     });
   });
 
   it('shows field errors and does not save invalid settings', async () => {
-    storeSession('admin');
+    storeSession('mehmet.ozturk');
     const { user } = renderApp('/rules?rule=R03');
     await screen.findByRole('heading', { name: /R03/ });
     await user.selectOptions(screen.getByLabelText('Bireysel · Parametre durumu'), 'PROVISIONAL');
@@ -77,7 +82,7 @@ describe('Rule management', () => {
   });
 
   it('blocks activation while every customer type is UNSET', async () => {
-    storeSession('admin');
+    storeSession('mehmet.ozturk');
     const { user } = renderApp('/rules?rule=R03');
     await user.click(await screen.findByLabelText('Kural etkin'));
     await user.click(screen.getByRole('button', { name: 'Kural ayarlarını kaydet' }));
@@ -91,14 +96,17 @@ describe('Rule management', () => {
         HttpResponse.json({ detail: 'Invalid R13 parameter values: decay_high must exceed decay_low' }, { status: 422 }),
       ),
     );
-    storeSession('admin');
+    storeSession('mehmet.ozturk');
     const { user } = renderApp('/rules?rule=R13');
     await screen.findByRole('heading', { name: /R13/ });
     expect(screen.getByLabelText(/Hariç tutulacak nakit/)).toHaveValue('3, 9');
     await user.clear(screen.getByLabelText(/decay_high/));
     await user.type(screen.getByLabelText(/decay_high/), '0.4');
+    await user.type(screen.getByLabelText(/Değişiklik gerekçesi/), 'Deneme');
     await user.click(screen.getByRole('button', { name: 'Kural ayarlarını kaydet' }));
-    expect(await screen.findByText('Invalid R13 parameter values: decay_high must exceed decay_low')).toBeInTheDocument();
+    // K7: Turkish wording first, the server's English text as the technical detail.
+    expect(await screen.findByText('Kural parametreleri geçersiz; alanları kontrol edin.')).toBeInTheDocument();
+    expect(screen.getByText('Invalid R13 parameter values: decay_high must exceed decay_low')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Değişiklikleri geri al' }));
     expect(screen.getByLabelText(/decay_high/)).toHaveValue(0.9);
@@ -106,7 +114,7 @@ describe('Rule management', () => {
 
   it('is read-only without rule:edit', async () => {
     server.use(http.get(`${API}/auth/me`, () => HttpResponse.json({ username: 'viewer', role_code: 'auditor', permissions: ['rule:view'] })));
-    storeSession('admin');
+    storeSession('mehmet.ozturk');
     renderApp('/rules?rule=R02');
     expect(await screen.findByText('Kural ayarları hesabınız için salt okunur.')).toBeInTheDocument();
     expect(screen.getByLabelText('Para birimi 1')).toBeDisabled();
@@ -114,14 +122,14 @@ describe('Rule management', () => {
   });
 
   it('shows legacy rules as read-only stored thresholds', async () => {
-    storeSession('admin');
+    storeSession('mehmet.ozturk');
     renderApp('/rules?rule=R1');
     expect(await screen.findByText(/eski kuralın kayıtlı bir uygulaması yok/)).toBeInTheDocument();
     expect(screen.getByText(/"amount_limit": 10000/)).toBeInTheDocument();
   });
 
   it('explains the rule in the guide', async () => {
-    storeSession('admin');
+    storeSession('mehmet.ozturk');
     const { user } = renderApp('/rules?rule=R13');
     await user.click(await screen.findByRole('button', { name: 'Bu kural nasıl çalışır, ayarlar ne anlama gelir' }));
     expect(screen.getByText(/Uygulanabilirlik: Düşük/)).toBeInTheDocument();

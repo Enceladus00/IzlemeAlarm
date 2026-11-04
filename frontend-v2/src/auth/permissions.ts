@@ -1,5 +1,5 @@
 /**
- * Permission codes seeded by alembic/versions/0002_rbac.py. The API is the
+ * Permission codes seeded by alembic/versions/0002_rbac.py and 0006_alert_workflow.py. The API is the
  * authorization boundary; the UI uses these only to hide what would fail.
  */
 export const PERMISSIONS = [
@@ -12,6 +12,8 @@ export const PERMISSIONS = [
   'customer:view',
   'alert:view',
   'alert:update',
+  'alert:escalate',
+  'alert:confirm',
   'dashboard:view',
   'audit:view',
 ] as const;

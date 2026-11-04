@@ -33,6 +33,7 @@ class SqlAlchemyRuleRepository:
         is_active: bool,
         weight: Any,
         actor_id: int,
+        reason: str = "",
     ) -> None:
         old_thresholds = dict(rule.thresholds)
         old_weight = rule.weight
@@ -64,6 +65,7 @@ class SqlAlchemyRuleRepository:
                     "old_is_active": old_is_active,
                     "new_is_active": is_active,
                     "is_active": is_active,
+                    "reason": reason,
                 },
             )
         )

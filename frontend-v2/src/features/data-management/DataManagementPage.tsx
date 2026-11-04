@@ -1,5 +1,5 @@
 import { Download, FileSpreadsheet, Upload, X } from 'lucide-react';
-import { useRef, useState, type DragEvent, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type DragEvent, type FormEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ApiError } from '@/api/client';
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_ROWS, UPLOAD_ENTITIES, type UploadEntity } from '@/api/schemas/uploads';
@@ -16,7 +16,7 @@ import { StatCard } from '@/components/ui/StatCard';
 import { cn } from '@/utils/cn';
 import { downloadText } from '@/utils/csv';
 import { formatDateTime, formatNumber } from '@/utils/format';
-import { CSV_TEMPLATES, checkCsvFile, templateColumns, useUploadCsv, useUploadReport } from './api';
+import { CSV_TEMPLATES, checkCsvFile, templateColumns, useUploadCsv, useUploadHistory, useUploadReport } from './api';
 import { UploadErrors } from './UploadErrors';
 
 const MAX_MB = MAX_UPLOAD_BYTES / (1024 * 1024);
@@ -31,6 +31,7 @@ export default function DataManagementPage() {
   const { t } = useTranslation();
   const { can } = useAuth();
   const [lastBatchId, setLastBatchId] = useState<number | null>(null);
+  const [selected, setSelected] = useState<{ id: number } | null>(null);
 
   return (
     <>
@@ -45,7 +46,12 @@ export default function DataManagementPage() {
         )}
         {can('upload:view') && (
           <div className={can('upload:create') ? 'xl:col-span-2' : 'xl:col-span-3'}>
-            <ReportCard defaultBatchId={lastBatchId} />
+            <ReportCard defaultBatchId={lastBatchId} selected={selected} />
+          </div>
+        )}
+        {can('upload:view') && (
+          <div className="xl:col-span-5">
+            <UploadHistoryCard onSelect={(id) => setSelected({ id })} />
           </div>
         )}
         {!can('upload:create') && !can('upload:view') && <InlineAlert tone="info">{t('data.noPermission')}</InlineAlert>}
@@ -190,7 +196,65 @@ function UploadCard({ onUploaded }: { onUploaded: (batchId: number) => void }) {
   );
 }
 
-function ReportCard({ defaultBatchId }: { defaultBatchId: number | null }) {
+/** GET /uploads: the latest uploads; a row opens its report. */
+function UploadHistoryCard({ onSelect }: { onSelect: (batchId: number) => void }) {
+  const { t, i18n } = useTranslation();
+  const language = i18n.resolvedLanguage ?? 'tr';
+  const history = useUploadHistory(true);
+  return (
+    <Card>
+      <CardHeader title={t('data.historyTitle')} description={t('data.historyDescription')} />
+      <div className="px-2 pb-3">
+        {history.isError ? (
+          <ErrorState error={history.error} onRetry={() => void history.refetch()} />
+        ) : !history.data ? (
+          <div className="mx-3 h-24 animate-pulse rounded bg-neutral-soft" aria-hidden />
+        ) : history.data.length === 0 ? (
+          <p className="px-3 py-4 text-[13px] text-muted">{t('data.historyEmpty')}</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] text-[13px]" aria-label={t('data.historyTitle')}>
+              <thead>
+                <tr className="border-b border-border text-left text-[11px] tracking-wide text-muted uppercase">
+                  <th scope="col" className="px-3 py-2 font-medium">{t('data.historyColumns.batch')}</th>
+                  <th scope="col" className="px-3 py-2 font-medium">{t('data.historyColumns.time')}</th>
+                  <th scope="col" className="px-3 py-2 font-medium">{t('data.entity')}</th>
+                  <th scope="col" className="px-3 py-2 font-medium">{t('data.reportFile')}</th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">{t('data.accepted')}</th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">{t('data.rejected')}</th>
+                  <th scope="col" className="px-3 py-2 font-medium">{t('data.historyColumns.by')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.data.map((item) => (
+                  <tr key={item.batch_id} className="border-b border-border last:border-0">
+                    <td className="px-3 py-2">
+                      <Button size="sm" variant="ghost" onClick={() => onSelect(item.batch_id)}>
+                        {t('data.historyOpen', { id: item.batch_id })}
+                      </Button>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap text-muted">{formatDateTime(item.uploaded_at, language)}</td>
+                    <td className="px-3 py-2">
+                      {(UPLOAD_ENTITIES as readonly string[]).includes(item.entity_type)
+                        ? t(`data.entities.${item.entity_type as UploadEntity}`)
+                        : item.entity_type}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs break-all">{item.file_name}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{formatNumber(item.accepted_rows, language)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{formatNumber(item.rejected_rows, language)}</td>
+                    <td className="px-3 py-2">{item.uploaded_by_name ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function ReportCard({ defaultBatchId, selected }: { defaultBatchId: number | null; selected: { id: number } | null }) {
   const { t, i18n } = useTranslation();
   const language = i18n.resolvedLanguage ?? 'tr';
   // null = untouched (follow the latest upload); '' = deliberately cleared.
@@ -199,6 +263,14 @@ function ReportCard({ defaultBatchId }: { defaultBatchId: number | null }) {
   const [invalid, setInvalid] = useState(false);
   const report = useUploadReport(requested);
   const value = draft ?? (defaultBatchId ? String(defaultBatchId) : '');
+
+  // A row picked in the upload history opens its report.
+  useEffect(() => {
+    if (!selected) return;
+    setDraft(String(selected.id));
+    setInvalid(false);
+    setRequested(selected.id);
+  }, [selected]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();

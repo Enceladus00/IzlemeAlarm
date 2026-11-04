@@ -27,12 +27,15 @@ export class ApiError extends Error {
   /** Server-provided message (English) when the API returned one. */
   readonly detail: string | null;
   readonly fieldErrors: ApiFieldError[];
+  /** POST /alerts/decisions names the alert that failed a check. */
+  readonly alertId: number | null;
 
   constructor(options: {
     status: number;
     kind: ApiErrorKind;
     detail?: string | null;
     fieldErrors?: ApiFieldError[];
+    alertId?: number | null;
   }) {
     super(options.detail ?? options.kind);
     this.name = 'ApiError';
@@ -40,6 +43,7 @@ export class ApiError extends Error {
     this.kind = options.kind;
     this.detail = options.detail ?? null;
     this.fieldErrors = options.fieldErrors ?? [];
+    this.alertId = options.alertId ?? null;
   }
 }
 
@@ -55,9 +59,19 @@ export function kindForStatus(status: number): ApiErrorKind {
 }
 
 /** FastAPI returns `detail` as a string, or as a list of validation issues for 422. */
-function parseErrorBody(body: unknown): { detail: string | null; fieldErrors: ApiFieldError[] } {
+interface ParsedError {
+  detail: string | null;
+  fieldErrors: ApiFieldError[];
+  alertId?: number | null;
+}
+
+function parseErrorBody(body: unknown): ParsedError {
   if (!body || typeof body !== 'object' || !('detail' in body)) {
     return { detail: null, fieldErrors: [] };
+  }
+  const alertId = (body as { alert_id?: unknown }).alert_id;
+  if (typeof alertId === 'number') {
+    return { ...parseErrorBody({ detail: (body as { detail: unknown }).detail }), alertId };
   }
   const detail = (body as { detail: unknown }).detail;
   if (typeof detail === 'string') return { detail, fieldErrors: [] };
@@ -157,7 +171,7 @@ export async function apiRequest<T = unknown>(
   }
 
   if (!response.ok) {
-    let parsed: { detail: string | null; fieldErrors: ApiFieldError[] } = {
+    let parsed: ParsedError = {
       detail: null,
       fieldErrors: [],
     };

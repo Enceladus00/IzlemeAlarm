@@ -12,6 +12,8 @@ export function UploadErrors({ errors, batchId }: { errors: UploadRowError[]; ba
   const { t, i18n } = useTranslation();
   const language = i18n.resolvedLanguage ?? 'tr';
   if (errors.length === 0) return <InlineAlert tone="success">{t('data.rejectionsNone')}</InlineAlert>;
+  // K13: another user's upload comes without row contents.
+  const hidden = errors.every((error) => error.row_data === null);
 
   return (
     <div className="space-y-3">
@@ -19,11 +21,14 @@ export function UploadErrors({ errors, batchId }: { errors: UploadRowError[]; ba
         <h3 className="text-sm font-semibold">
           {t('data.rejectionsTitle')} · {formatNumber(errors.length, language)}
         </h3>
-        <Button size="sm" onClick={() => downloadText(`upload-${batchId}-rejections.csv`, rejectionCsv(errors))}>
-          <Download className="size-3.5" aria-hidden />
-          {t('data.downloadRejections')}
-        </Button>
+        {!hidden && (
+          <Button size="sm" onClick={() => downloadText(`upload-${batchId}-rejections.csv`, rejectionCsv(errors))}>
+            <Download className="size-3.5" aria-hidden />
+            {t('data.downloadRejections')}
+          </Button>
+        )}
       </div>
+      {hidden && <InlineAlert tone="info">{t('data.rowDataHidden')}</InlineAlert>}
       <DataTable
         label={t('data.rejectionsTitle')}
         rows={errors}
@@ -37,9 +42,11 @@ export function UploadErrors({ errors, batchId }: { errors: UploadRowError[]; ba
             header: t('data.rowData'),
             render: (error) => (
               <span className="font-mono text-xs break-all text-muted">
-                {Object.entries(error.row_data ?? {})
-                  .map(([key, value]) => `${key}=${String(value)}`)
-                  .join(' · ')}
+                {error.row_data === null
+                  ? '—'
+                  : Object.entries(error.row_data)
+                      .map(([key, value]) => `${key}=${String(value)}`)
+                      .join(' · ')}
               </span>
             ),
           },

@@ -102,24 +102,17 @@ class FakeAlertService:
         self.list_filters = _kwargs
         return {"total": 1, "items": [{"alert_id": 1, "rule_code": "R01"}]}
 
-    def get_alert(self, _alert_id: int) -> dict[str, Any]:
+    def get_alert(self, _alert_id: int, _permissions=frozenset()) -> dict[str, Any]:
         return {
             "alert_id": 1,
             "customer": {"customer_no": "C-LINKED", "customer_name": "Linked"},
             "transactions": [{"transaction_id": 14}],
         }
 
-    def customer_transactions_for_alert(self, _alert_id: int, _limit: int):
-        return {
-            "customer_no": "C-LINKED",
-            "customer_name": "Linked",
-            "items": [{"transaction_id": 14}],
-        }
-
     def update_status(
-        self, alert_id: int, status: str, note: str | None, actor_id: int
+        self, alert_id: int, status: str, note: str | None, user: AuthenticatedUser
     ) -> dict[str, Any]:
-        self.status_actor_id = actor_id
+        self.status_actor_id = user.user_id
         return {"alert_id": alert_id, "status": status, "changed": True}
 
 
@@ -127,16 +120,30 @@ class FakeRuleService:
     def list_rules(self):
         return [{"rule_code": "R01"}]
 
-    def update_rule(self, rule_code, thresholds, is_active, actor_id, weight=None):
-        return {"rule_code": rule_code, "actor_id": actor_id}
+    def update_rule(self, rule_code, thresholds, is_active, actor_id, weight=None, reason=""):
+        self.reason = reason
+        return {"rule_code": rule_code, "is_active": is_active, "weight": "1.000", "thresholds": thresholds}
 
 
 class FakeUploadService:
     async def upload(self, entity, _file, actor_id):
         return {"entity_type": entity, "actor_id": actor_id}
 
-    def get_batch(self, batch_id):
-        return {"batch_id": batch_id}
+    def get_batch(self, batch_id, _viewer_id=None):
+        return {
+            "batch_id": batch_id,
+            "entity_type": "customer",
+            "file_name": "c.csv",
+            "total_rows": 0,
+            "accepted_rows": 0,
+            "rejected_rows": 0,
+            "uploaded_at": "2026-11-04T10:00:00",
+            "own_upload": True,
+            "errors": [],
+        }
+
+    def list_batches(self, _entity, _limit):
+        return []
 
 
 class FakeUserService:
@@ -150,28 +157,54 @@ class FakeUserService:
         return {"user_id": 3, "username": kwargs["username"]}
 
     def update_user(self, user_id, **kwargs):
-        return {"user_id": user_id, "is_active": kwargs["is_active"]}
+        return {
+            "user_id": user_id,
+            "username": "user",
+            "role_code": "analyst",
+            "is_active": kwargs["is_active"],
+            "created_at": None,
+        }
 
 
 class FakeTransactionService:
     def list_transactions(self, **_kwargs):
         return {"total": 0, "items": []}
 
-    def customer_history(self, customer_no, _limit):
-        return {"customer_no": customer_no, "items": []}
 
 
 class FakeAnalysisService:
     def check_health(self):
         return {"status": "ok"}
 
-    def dashboard_summary(self):
-        return {"alerts": 0}
+    def dashboard_summary(self, days=30):
+        return {
+            "days": days,
+            "customers": 0,
+            "accounts": 0,
+            "transactions": 0,
+            "alerts": 0,
+            "suspicious_transactions": 0,
+            "by_status": {},
+            "by_severity": {},
+            "by_rule": {},
+            "trends": [],
+        }
 
     def system_overview(self):
         return {
-            "health": {"api": "ok", "database": "connected"},
-            "rules": {"active": 18},
+            "health": {
+                "api": "ok",
+                "database": "connected",
+                "database_latency_ms": 1.0,
+                "schema_revision": "0006_alert_workflow",
+                "schema_head": "0006_alert_workflow",
+            },
+            "rules": {
+                "active": 18,
+                "last_run_at": None,
+                "last_run_status": None,
+                "last_run_duration_ms": None,
+            },
             "records": {},
             "security": {"session_ttl_seconds": 1800},
         }
@@ -200,7 +233,7 @@ class FakeDemoService:
 
 
 class FakeAuditService:
-    def list_events(self, _offset, _limit):
+    def list_events(self, _offset, _limit, _filters=None, _permissions=frozenset()):
         return {"total": 0, "items": []}
 
 
@@ -275,7 +308,7 @@ def test_auth_me_returns_sorted_permissions(api_client):
     ("method", "path", "permission", "kwargs"),
     [
         ("get", "/rules", "rule:view", {}),
-        ("put", "/rules/R01", "rule:edit", {"json": {"thresholds": {}, "is_active": True}}),
+        ("put", "/rules/R01", "rule:edit", {"json": {"thresholds": {}, "is_active": True, "reason": "test"}}),
         ("post", "/rules/evaluate", "rule:edit", {}),
         (
             "post",
@@ -285,7 +318,6 @@ def test_auth_me_returns_sorted_permissions(api_client):
         ),
         ("get", "/uploads/1", "upload:view", {}),
         ("get", "/transactions", "customer:view", {}),
-        ("get", "/customers/C-1/transactions", "customer:view", {}),
         ("get", "/audit-log", "audit:view", {}),
         ("post", "/demo/seed", "upload:create", {}),
         ("get", "/users", "user:manage", {}),
@@ -323,11 +355,10 @@ def test_analyst_is_denied_admin_only_routes_and_audited(
         ("get", "/rules", {}, 200),
         ("get", "/dashboard/summary", {}, 200),
         ("get", "/demo/status", {}, 200),
-        ("put", "/rules/R01", {"json": {"thresholds": {}, "is_active": True}}, 200),
+        ("put", "/rules/R01", {"json": {"thresholds": {}, "is_active": True, "reason": "test"}}, 200),
         ("post", "/rules/evaluate", {}, 200),
         ("get", "/uploads/1", {}, 200),
         ("get", "/transactions", {}, 200),
-        ("get", "/customers/C-1/transactions", {}, 200),
         ("get", "/audit-log", {}, 200),
         ("get", "/users", {}, 200),
         ("get", "/admin/system-overview", {}, 200),
@@ -393,54 +424,6 @@ def test_alert_list_can_be_filtered_by_customer(api_client):
     assert alert_service.list_filters["customer_no"] == "C-1042"
     assert alert_service.list_filters["offset"] == 0
     assert alert_service.list_filters["limit"] == 200
-
-
-def test_analyst_alert_detail_and_history_are_alert_scoped(api_client):
-    client, _audit_rows, _alert_service = api_client
-    detail = client.get("/alerts/1", headers=authorization("analyst"))
-    history = client.get(
-        "/alerts/1/customer-transactions",
-        headers=authorization("analyst"),
-    )
-    assert detail.status_code == 200
-    assert detail.json()["customer"]["customer_no"] == "C-LINKED"
-    assert detail.json()["transactions"] == [{"transaction_id": 14}]
-    assert history.status_code == 200
-    assert history.json()["customer_no"] == "C-LINKED"
-    assert history.json()["items"] == [{"transaction_id": 14}]
-
-
-def test_alert_customer_history_query_is_scoped_to_alert_customer():
-    customer = Customer(
-        customer_id=23,
-        customer_no="C-LINKED",
-        full_name="Linked customer",
-    )
-    captured: list[Any] = []
-
-    class EmptyScalars:
-        def __iter__(self):
-            return iter(())
-
-        def unique(self):
-            return self
-
-    class QueryCaptureSession:
-        def scalar(self, _statement):
-            return SimpleNamespace(customer_id=23, customer=customer)
-
-        def scalars(self, statement):
-            captured.append(statement)
-            return EmptyScalars()
-
-    result = SqlAlchemyAlertRepository(QueryCaptureSession()).customer_transactions_for_alert(
-        10, 200
-    )
-    assert result == (customer, [])
-    compiled = str(captured[0].compile(compile_kwargs={"literal_binds": True}))
-    assert "account.customer_id = 23" in compiled
-    assert "transaction.sender_account_id IN" in compiled
-    assert "transaction.receiver_account_id IN" in compiled
 
 
 def test_alert_list_query_filters_by_customer_number():
@@ -573,3 +556,20 @@ def test_login_audit_events_omit_password(api_client, monkeypatch):
     assert actions[-3:] == ["LOGIN_SUCCESS", "LOGIN_FAILED", "LOGIN_FAILED"]
     assert all("password" not in str(row.details).lower() for row in audit_rows)
     assert audit_rows[-1].actor_id is None
+
+
+def test_failed_login_never_records_the_supplied_unknown_username(api_client):
+    _client, audit_rows, _alert_service = api_client
+
+    class UserRepository:
+        def get_by_username(self, _username):
+            return None
+
+    service = AuthService(UserRepository(), AuditLogRepository())
+    # A user who typed a password into the username field.
+    assert service.login("Sup3rSecret!", "whatever") is None
+    row = audit_rows[-1]
+    assert row.action == "LOGIN_FAILED"
+    assert "Sup3rSecret!" not in str(row.details)
+    assert "Sup3rSecret!" not in str(row.entity_id)
+    assert row.details == {"username": None, "unknown_user": True}

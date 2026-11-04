@@ -165,3 +165,59 @@ class SqlAlchemyAnalysisRepository:
             },
             "schema_revision": schema_revision,
         }
+
+    def funnel_data(self, since: datetime) -> dict[str, Any]:
+        """Where did the alerts created since `since` go? (K3 'Alarm akışı').
+
+        An alert counts as escalated when it was ever in in_review (or is confirmed,
+        which legacy data could reach directly). Outcome = current status.
+        created = analyst_closed + analyst_open + escalated always holds.
+        """
+        row = self._session.execute(
+            text(
+                """
+                WITH created AS (
+                    SELECT a.alert_id, a.status,
+                           (a.status IN ('in_review', 'confirmed_suspicious')
+                            OR EXISTS (SELECT 1 FROM alert_status_history h
+                                       WHERE h.alert_id = a.alert_id
+                                         AND h.new_status = 'in_review')) AS escalated
+                    FROM alert a WHERE a.created_at >= :since
+                )
+                SELECT COUNT(*) AS created,
+                       COUNT(*) FILTER (WHERE NOT escalated AND status = 'closed') AS analyst_closed,
+                       COUNT(*) FILTER (WHERE NOT escalated AND status <> 'closed') AS analyst_open,
+                       COUNT(*) FILTER (WHERE escalated) AS escalated,
+                       COUNT(*) FILTER (WHERE escalated AND status = 'confirmed_suspicious') AS confirmed,
+                       COUNT(*) FILTER (WHERE escalated AND status = 'closed') AS escalated_closed,
+                       COUNT(*) FILTER (WHERE escalated AND status = 'new') AS returned,
+                       COUNT(*) FILTER (WHERE escalated AND status = 'in_review') AS pending
+                FROM created
+                """
+            ),
+            {"since": since},
+        ).mappings().one()
+        return dict(row)
+
+    def rule_performance_data(self, since: datetime) -> list[dict[str, Any]]:
+        rows = self._session.execute(
+            text(
+                """
+                SELECT r.rule_code, r.name, r.is_active, r.thresholds,
+                       (SELECT COUNT(*) FROM rule_result rr
+                        JOIN detection_run dr ON dr.run_id = rr.run_id
+                        WHERE rr.rule_id = r.rule_id AND rr.result_status = 'evaluated'
+                          AND dr.as_of >= :since) AS evaluated,
+                       COUNT(a.alert_id) AS alerts,
+                       ROUND(AVG(a.score), 4) AS avg_alert_score,
+                       COUNT(a.alert_id) FILTER (WHERE a.status = 'confirmed_suspicious') AS confirmed,
+                       COUNT(a.alert_id) FILTER (WHERE a.status = 'closed') AS closed
+                FROM monitoring_rule r
+                LEFT JOIN alert a ON a.rule_id = r.rule_id AND a.created_at >= :since
+                GROUP BY r.rule_id
+                ORDER BY r.rule_code
+                """
+            ),
+            {"since": since},
+        ).mappings().all()
+        return [dict(row) for row in rows]

@@ -6,7 +6,16 @@ import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { Input } from '@/components/ui/Input';
 import { Select, Textarea } from '@/components/ui/Select';
-import { BOUNDS, CASH_CHANNELS, SPECIAL_NAMES, hasParam, integerAnchors, type DraftErrors, type TypeDraft } from './model';
+import {
+  BOUNDS,
+  CASH_CHANNELS,
+  OPEN_STATUSES,
+  SPECIAL_NAMES,
+  hasParam,
+  integerAnchors,
+  type DraftErrors,
+  type TypeDraft,
+} from './model';
 import { useFieldErrorText } from './useFieldErrorText';
 
 function NumberField({
@@ -271,6 +280,56 @@ export function ParameterFields({
             <option value="confirmed_suspicious">{t('alertStatus.confirmed_suspicious')}</option>
           </Select>
         </Field>
+      )}
+
+      {hasParam(parameters, 'countries') && (
+        <Field label={t('rules.countries')} hint={t('rules.countriesHint')} error={err('countries')}>
+          <Input
+            className="font-mono"
+            value={draft.countries}
+            disabled={disabled}
+            onChange={(event) => onChange({ ...draft, countries: event.target.value })}
+          />
+        </Field>
+      )}
+
+      {hasParam(parameters, 'excluded_rules') && (
+        <Field label={t('rules.excludedRules')} hint={t('rules.excludedRulesHint')} error={err('excluded_rules')}>
+          <Input
+            className="font-mono"
+            value={draft.excludedRules}
+            disabled={disabled}
+            onChange={(event) => onChange({ ...draft, excludedRules: event.target.value })}
+          />
+        </Field>
+      )}
+
+      {hasParam(parameters, 'open_statuses') && (
+        <fieldset>
+          <legend className="text-[13px] font-semibold">{t('rules.openStatuses')}</legend>
+          <div className="mt-2 flex flex-wrap gap-4">
+            {OPEN_STATUSES.map((status) => (
+              <label key={status} className="flex items-center gap-2 text-[13px]">
+                <input
+                  type="checkbox"
+                  className="size-4 accent-[var(--accent)]"
+                  checked={draft.openStatuses.includes(status)}
+                  disabled={disabled}
+                  onChange={(event) =>
+                    onChange({
+                      ...draft,
+                      openStatuses: event.target.checked
+                        ? [...draft.openStatuses, status]
+                        : draft.openStatuses.filter((item) => item !== status),
+                    })
+                  }
+                />
+                {t(`alertStatus.${status}`)}
+              </label>
+            ))}
+          </div>
+          {err('open_statuses') && <p className="mt-1 text-xs font-medium text-danger">{err('open_statuses')}</p>}
+        </fieldset>
       )}
 
       {parameters

@@ -1,8 +1,14 @@
-import { BellOff, ChevronRight, Search, SearchX } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { BellOff, ChevronLeft, ChevronRight, Search } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router';
-import { ALERT_SEVERITIES, ALERT_STATUSES, type AlertSummary } from '@/api/schemas/alerts';
+import {
+  ALERT_SEVERITIES,
+  QUEUE_STATUSES,
+  type AlertQueueItem,
+  type QueueStatus,
+} from '@/api/schemas/alerts';
+import { useAuth } from '@/auth/auth-context';
 import { AlertStatusBadge, SeverityBadge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -12,65 +18,73 @@ import { FilterChip } from '@/components/ui/FilterChip';
 import { InlineAlert } from '@/components/ui/InlineAlert';
 import { Input } from '@/components/ui/Input';
 import { PageHeader } from '@/components/ui/PageHeader';
-import { Placeholder } from '@/components/ui/Placeholder';
 import { StatCard } from '@/components/ui/StatCard';
 import { cn } from '@/utils/cn';
 import { formatDateTime, formatNumber } from '@/utils/format';
-import { QUEUE_PAGE_SIZE, useAlertCount, useAlertQueue, useRuleCodes } from './api';
+import { QUEUE_PAGE_SIZE, useAlertQueue, useCustomerAlerts, useRuleCodes } from './api';
 import {
+  ANALYST_DEFAULTS,
+  COMPLIANCE_DEFAULTS,
   DATE_RANGES,
-  DEFAULT_FILTERS,
+  QUEUE_SORTS,
   hasInvalidRange,
   parseFilters,
   toApiQuery,
   toSearchParams,
   type QueueFilters,
 } from './filters';
-import { groupAlertsByCustomer, matchesSearch, type CustomerGroup } from './grouping';
+import { ageInDays } from './grouping';
+import { MySummaryCards } from './MySummaryCards';
+import { isComplianceUser } from './workflow';
 
 const ROW_GRID =
   'md:grid md:grid-cols-[minmax(180px,2fr)_minmax(120px,1.4fr)_110px_64px_80px_minmax(130px,1.4fr)_96px] md:items-center md:gap-3';
-
-function distinctCustomers(alerts: AlertSummary[]): number {
-  return new Set(alerts.map((alert) => alert.customer_no)).size;
-}
+const SEARCH_DEBOUNCE_MS = 300;
 
 export default function AlertQueuePage() {
   const { t, i18n } = useTranslation();
   const language = i18n.resolvedLanguage ?? 'tr';
   const [params, setParams] = useSearchParams();
   const location = useLocation();
+  const { permissions } = useAuth();
   const [today] = useState(() => new Date());
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
 
-  const filters = parseFilters(params);
+  const defaults = isComplianceUser(permissions) ? COMPLIANCE_DEFAULTS : ANALYST_DEFAULTS;
+  const filters = parseFilters(params, defaults);
   const invalidRange = hasInvalidRange(filters);
-  const apiQuery = useMemo(() => toApiQuery(filters, today), [filters.status, filters.severity, filters.rule, filters.range, filters.from, filters.to, today]); // eslint-disable-line react-hooks/exhaustive-deps
-
+  const apiQuery = useMemo(
+    () => toApiQuery(filters, today, QUEUE_PAGE_SIZE),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [params.toString(), today, defaults.status],
+  );
   const queue = useAlertQueue(apiQuery, !invalidRange);
-  const pending = useAlertQueue({ status: 'new' });
-  const highPending = useAlertCount({ status: 'new', severity: 'high' });
   const ruleCodes = useRuleCodes();
+
+  // The search box updates the URL (and so the server query) after a short pause.
+  const [search, setSearch] = useState(filters.q);
+  useEffect(() => setSearch(filters.q), [filters.q]);
+  useEffect(() => {
+    if (search.trim() === filters.q.trim()) return;
+    const timer = setTimeout(() => setFilters({ q: search }), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
 
   const legacyLink = params.get('alert');
   if (legacyLink && /^\d+$/.test(legacyLink)) return <Navigate to={`/alerts/${legacyLink}`} replace />;
 
-  const setFilters = (patch: Partial<QueueFilters>) =>
-    setParams(toSearchParams({ ...filters, ...patch }), { replace: true });
+  function setFilters(patch: Partial<QueueFilters>) {
+    // Any filter change returns to the first page.
+    const next = { ...filters, page: 0, ...patch };
+    setParams(toSearchParams(next, defaults), { replace: true });
+  }
 
-  const loadedAlerts = queue.data?.pages.flatMap((page) => page.items) ?? [];
-  const total = queue.data?.pages[0]?.total ?? 0;
-  const groups = groupAlertsByCustomer(loadedAlerts, today);
-  const visibleGroups = groups.filter((group) => matchesSearch(group, filters.q));
-  const partial = loadedAlerts.length < total;
-
-  // KPI: pending alerts and the customers behind them.
-  const pendingAlerts = pending.data?.pages[0]?.items ?? [];
-  const pendingTotal = pending.data?.pages[0]?.total;
-  const pendingComplete = pendingTotal !== undefined && pendingAlerts.length >= pendingTotal;
-  const highAlerts = pendingAlerts.filter((alert) => alert.severity === 'high');
-  const customersCaption = (count: number) =>
-    pendingComplete ? t('alerts.kpiCustomers', { count }) : t('alerts.kpiCustomersAtLeast', { count });
+  const data = queue.data;
+  const summary = data?.summary;
+  const items = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const pageCount = Math.max(1, Math.ceil(total / QUEUE_PAGE_SIZE));
 
   const toggle = (customerNo: string) =>
     setExpanded((current) => {
@@ -80,7 +94,8 @@ export default function AlertQueuePage() {
       return next;
     });
 
-  const isDefault = toSearchParams(filters).toString() === toSearchParams(DEFAULT_FILTERS).toString();
+  const isDefault = toSearchParams(filters, defaults).toString() === '';
+  const flash = (location.state as { flash?: string } | null)?.flash;
 
   return (
     <>
@@ -96,8 +111,9 @@ export default function AlertQueuePage() {
             <Input
               id="alert-search"
               type="search"
-              value={filters.q}
-              onChange={(event) => setFilters({ q: event.target.value })}
+              value={search}
+              maxLength={100}
+              onChange={(event) => setSearch(event.target.value)}
               placeholder={t('alerts.searchLabel')}
               title={t('alerts.searchHint')}
               className="pl-9"
@@ -106,22 +122,27 @@ export default function AlertQueuePage() {
         }
       />
 
+      {flash && (
+        <InlineAlert tone="success" live className="mb-4">
+          {flash}
+        </InlineAlert>
+      )}
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
-          loading={pending.isPending}
+          loading={queue.isPending}
           label={t('alerts.kpiPending')}
-          value={pendingTotal !== undefined && formatNumber(pendingTotal, language)}
-          caption={customersCaption(distinctCustomers(pendingAlerts))}
+          value={summary && formatNumber(summary.alerts, language)}
+          caption={summary && t('alerts.kpiCustomers', { count: summary.customers })}
         />
         <StatCard
-          loading={highPending.isPending || pending.isPending}
+          loading={queue.isPending}
           label={t('alerts.kpiHigh')}
-          value={highPending.data !== undefined && formatNumber(highPending.data, language)}
-          caption={customersCaption(distinctCustomers(highAlerts))}
-          tone={highPending.data ? 'danger' : 'default'}
+          value={summary && formatNumber(summary.high_alerts, language)}
+          caption={summary && t('alerts.kpiCustomers', { count: summary.high_customers })}
+          tone={summary?.high_alerts ? 'danger' : 'default'}
         />
-        <StatCard label={t('alerts.kpiDecidedToday')} value={<Placeholder>—</Placeholder>} caption={t('alerts.kpiNotTracked')} />
-        <StatCard label={t('alerts.kpiReturned')} value={<Placeholder>—</Placeholder>} caption={t('alerts.kpiNotTracked')} />
+        <MySummaryCards />
       </div>
 
       <div className="mt-6 mb-3 flex flex-wrap items-center gap-2">
@@ -129,16 +150,13 @@ export default function AlertQueuePage() {
           label={t('alerts.filterStatus')}
           value={filters.status}
           active
-          onChange={(status) => setFilters({ status })}
-          options={[
-            { value: 'all', label: t('alerts.all') },
-            ...ALERT_STATUSES.map((status) => ({ value: status, label: t(`alertStatus.${status}`) })),
-          ]}
+          onChange={(status) => setFilters({ status: status as QueueStatus })}
+          options={QUEUE_STATUSES.map((status) => ({ value: status, label: t(`alerts.queueStatus.${status}`) }))}
         />
         <FilterChip
           label={t('alerts.filterSeverity')}
           value={filters.severity}
-          onChange={(severity) => setFilters({ severity })}
+          onChange={(severity) => setFilters({ severity: severity as QueueFilters['severity'] })}
           options={[
             { value: 'all', label: t('alerts.all') },
             ...ALERT_SEVERITIES.map((severity) => ({ value: severity, label: t(`severity.${severity}`) })),
@@ -156,7 +174,7 @@ export default function AlertQueuePage() {
         <FilterChip
           label={t('alerts.filterDate')}
           value={filters.range}
-          onChange={(range) => setFilters({ range })}
+          onChange={(range) => setFilters({ range: range as QueueFilters['range'] })}
           options={DATE_RANGES.map((range) => ({ value: range, label: t(`alerts.ranges.${range}`) }))}
           footer={(close) =>
             filters.range === 'custom' && (
@@ -164,12 +182,17 @@ export default function AlertQueuePage() {
             )
           }
         />
+        <FilterChip
+          label={t('alerts.filterSort')}
+          value={filters.sort}
+          onChange={(sort) => setFilters({ sort: sort as QueueFilters['sort'] })}
+          options={QUEUE_SORTS.map((sort) => ({ value: sort, label: t(`alerts.sorts.${sort}`) }))}
+        />
         {!isDefault && (
           <Button size="sm" variant="ghost" onClick={() => setParams(new URLSearchParams(), { replace: true })}>
             {t('alerts.clearFilters')}
           </Button>
         )}
-        <p className="ml-auto text-xs text-muted">{t('alerts.sortNote')}</p>
       </div>
 
       {invalidRange ? (
@@ -179,7 +202,7 @@ export default function AlertQueuePage() {
       ) : queue.isError ? (
         <ErrorState error={queue.error} onRetry={() => void queue.refetch()} />
       ) : (
-        <Card className={cn('overflow-hidden', queue.isFetching && !queue.isFetchingNextPage && queue.data && 'opacity-70')}>
+        <Card className={cn('overflow-hidden', queue.isFetching && data && 'opacity-70')}>
           <div
             className={cn(ROW_GRID, 'hidden border-b border-border px-5 py-3 text-[11px] font-medium tracking-wide text-muted uppercase')}
             aria-hidden
@@ -189,33 +212,26 @@ export default function AlertQueuePage() {
             <span>{t('alerts.columns.severity')}</span>
             <span className="text-right">{t('alerts.columns.count')}</span>
             <span>{t('alerts.columns.oldest')}</span>
-            <span className="flex items-center gap-1.5">
-              {t('alerts.columns.lastActor')}
-              <Placeholder className="py-0 normal-case" />
-            </span>
+            <span>{t('alerts.columns.lastActor')}</span>
             <span />
           </div>
 
           {queue.isPending ? (
             <QueueSkeleton />
-          ) : loadedAlerts.length === 0 ? (
-            <EmptyState
-              icon={BellOff}
-              title={isDefault ? t('alerts.emptyQueueTitle') : t('alerts.emptyTitle')}
-            >
+          ) : items.length === 0 ? (
+            <EmptyState icon={BellOff} title={isDefault ? t('alerts.emptyQueueTitle') : t('alerts.emptyTitle')}>
               {isDefault ? t('alerts.emptyQueueBody') : t('alerts.emptyBody')}
             </EmptyState>
-          ) : visibleGroups.length === 0 ? (
-            <EmptyState icon={SearchX} title={t('alerts.noSearchMatch', { query: filters.q.trim() })} />
           ) : (
             <ul>
-              {visibleGroups.map((group) => (
+              {items.map((item) => (
                 <GroupRow
-                  key={group.customerNo}
-                  group={group}
-                  expanded={expanded.has(group.customerNo)}
-                  onToggle={() => toggle(group.customerNo)}
-                  showStatus={filters.status === 'all'}
+                  key={item.customer_no}
+                  item={item}
+                  status={filters.status}
+                  today={today}
+                  expanded={expanded.has(item.customer_no)}
+                  onToggle={() => toggle(item.customer_no)}
                   backSearch={location.search}
                 />
               ))}
@@ -224,24 +240,27 @@ export default function AlertQueuePage() {
         </Card>
       )}
 
-      {!invalidRange && queue.data && loadedAlerts.length > 0 && (
-        <div className="mt-3 space-y-3">
-          {partial && <InlineAlert tone="warning">{t('alerts.partialNote')}</InlineAlert>}
-          <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted">
-            <p>
-              {partial
-                ? t('alerts.footerTotal', { customers: groups.length, loaded: loadedAlerts.length, total })
-                : t('alerts.footer', { customers: visibleGroups.length, alerts: visibleGroups.reduce((sum, g) => sum + g.alerts.length, 0) })}
-            </p>
-            <p>{t('alerts.footerHint')}</p>
-          </div>
-          {queue.hasNextPage && (
-            <div className="flex justify-center">
-              <Button loading={queue.isFetchingNextPage} onClick={() => void queue.fetchNextPage()}>
-                {t('alerts.loadMore', { count: Math.min(QUEUE_PAGE_SIZE, total - loadedAlerts.length) })}
+      {!invalidRange && data && items.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-muted">
+          <p>{t('alerts.footer', { customers: total, alerts: summary?.alerts ?? 0 })}</p>
+          {pageCount > 1 && (
+            <nav className="flex items-center gap-2" aria-label={t('alerts.pagination')}>
+              <Button size="sm" disabled={filters.page === 0} onClick={() => setFilters({ page: filters.page - 1 })}>
+                <ChevronLeft className="size-4" aria-hidden />
+                {t('common.previous')}
               </Button>
-            </div>
+              <span>{t('alerts.pageOf', { page: filters.page + 1, pages: pageCount })}</span>
+              <Button
+                size="sm"
+                disabled={filters.page + 1 >= pageCount}
+                onClick={() => setFilters({ page: filters.page + 1 })}
+              >
+                {t('common.next')}
+                <ChevronRight className="size-4" aria-hidden />
+              </Button>
+            </nav>
           )}
+          <p className="w-full">{t('alerts.footerHint')}</p>
         </div>
       )}
     </>
@@ -285,24 +304,32 @@ function QueueSkeleton() {
   );
 }
 
+function customerTypeKey(type: string | null): 'customerType.BIREYSEL' | 'customerType.KURUMSAL' | 'customerType.unknown' {
+  if (type === 'BIREYSEL') return 'customerType.BIREYSEL';
+  if (type === 'KURUMSAL') return 'customerType.KURUMSAL';
+  return 'customerType.unknown';
+}
+
 function GroupRow({
-  group,
+  item,
+  status,
+  today,
   expanded,
   onToggle,
-  showStatus,
   backSearch,
 }: {
-  group: CustomerGroup;
+  item: AlertQueueItem;
+  status: QueueStatus;
+  today: Date;
   expanded: boolean;
   onToggle: () => void;
-  showStatus: boolean;
   backSearch: string;
 }) {
   const { t, i18n } = useTranslation();
   const language = i18n.resolvedLanguage ?? 'tr';
   const navigate = useNavigate();
-  const panelId = `alerts-${group.customerNo}`;
-  const first = group.alerts[0]!;
+  const panelId = `alerts-${item.customer_no}`;
+  const ageDays = ageInDays(item.oldest_created_at, today);
   const fieldLabel = (text: string) => <span className="mr-2 text-xs text-muted md:sr-only">{text}</span>;
 
   return (
@@ -314,60 +341,89 @@ function GroupRow({
             onClick={onToggle}
             aria-expanded={expanded}
             aria-controls={panelId}
-            aria-label={t('alerts.expandRow', { name: group.customerName })}
+            aria-label={t('alerts.expandRow', { name: item.customer_name })}
             className="mt-0.5 rounded p-0.5 text-muted hover:bg-surface-hover hover:text-fg"
           >
             <ChevronRight className={cn('size-4 transition-transform', expanded && 'rotate-90')} aria-hidden />
           </button>
           <div className="min-w-0">
-            <p className="truncate font-semibold">{group.customerName}</p>
-            <p className="flex flex-wrap items-center gap-1.5 font-mono text-xs text-muted">
-              {group.customerNo} ·<Placeholder className="py-0 font-sans text-[11px]">{t('alerts.customerType')}</Placeholder>
+            <p className="truncate font-semibold">{item.customer_name}</p>
+            <p className="font-mono text-xs text-muted">
+              {item.customer_no} · <span className="font-sans">{t(customerTypeKey(item.customer_type))}</span>
             </p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {fieldLabel(t('alerts.columns.rules'))}
-          {group.ruleCodes.map((code) => (
-            <span
-              key={code}
-              className="rounded bg-neutral-soft px-1.5 py-0.5 font-mono text-xs"
-              title={group.alerts.find((alert) => alert.rule_code === code)?.rule_name}
-            >
+          {item.rule_codes.map((code) => (
+            <span key={code} className="rounded bg-neutral-soft px-1.5 py-0.5 font-mono text-xs">
               {code}
             </span>
           ))}
         </div>
         <div>
           {fieldLabel(t('alerts.columns.severity'))}
-          <SeverityBadge severity={group.maxSeverity} />
+          <SeverityBadge severity={item.severity} />
         </div>
         <div className="font-semibold tabular-nums md:text-right">
           {fieldLabel(t('alerts.columns.count'))}
-          {formatNumber(group.alerts.length, language)}
+          {formatNumber(item.alert_count, language)}
         </div>
         <div className="text-[13px]">
           {fieldLabel(t('alerts.columns.oldest'))}
-          {group.ageDays === 0 ? t('alerts.today') : t('alerts.days', { count: group.ageDays })}
+          {ageDays === 0 ? t('alerts.today') : t('alerts.days', { count: ageDays })}
         </div>
-        <div className="text-muted">
-          {fieldLabel(t('alerts.columns.lastActor'))}—
+        <div className="text-[13px]" title={item.returned_note ?? undefined}>
+          {fieldLabel(t('alerts.columns.lastActor'))}
+          {item.returned_by ? (
+            <span className="font-medium text-warning">{t('alerts.returnedBy', { name: item.returned_by })}</span>
+          ) : (
+            <span className="text-muted">—</span>
+          )}
         </div>
         <div className="md:text-right">
           <Button
             size="sm"
             variant={expanded ? 'primary' : 'secondary'}
-            aria-label={t('alerts.reviewCustomer', { name: group.customerName })}
-            onClick={() => navigate(`/alerts/${first.alert_id}`, { state: { backSearch } })}
+            aria-label={t('alerts.reviewCustomer', { name: item.customer_name })}
+            onClick={() => navigate(`/alerts/${item.alert_ids[0]}`, { state: { backSearch } })}
           >
             {t('alerts.review')}
           </Button>
         </div>
       </div>
 
-      {expanded && (
-        <ul id={panelId} className="border-t border-border/70 px-5 pt-1 pb-3 md:pl-12">
-          {group.alerts.map((alert) => (
+      {expanded && <ExpandedAlerts id={panelId} item={item} status={status} backSearch={backSearch} />}
+    </li>
+  );
+}
+
+/** The customer's alerts in this queue status, loaded when the row is opened. */
+function ExpandedAlerts({
+  id,
+  item,
+  status,
+  backSearch,
+}: {
+  id: string;
+  item: AlertQueueItem;
+  status: QueueStatus;
+  backSearch: string;
+}) {
+  const { t, i18n } = useTranslation();
+  const language = i18n.resolvedLanguage ?? 'tr';
+  const alerts = useCustomerAlerts(item.customer_no, status);
+  const wanted = new Set(item.alert_ids);
+  const rows = (alerts.data?.items ?? []).filter((alert) => wanted.has(alert.alert_id));
+  return (
+    <div id={id} className="border-t border-border/70 px-5 pt-1 pb-3 md:pl-12">
+      {alerts.isError ? (
+        <ErrorState error={alerts.error} onRetry={() => void alerts.refetch()} />
+      ) : alerts.isPending ? (
+        <div className="my-2 h-10 animate-pulse rounded bg-neutral-soft" aria-hidden />
+      ) : (
+        <ul>
+          {rows.map((alert) => (
             <li key={alert.alert_id} className="border-b border-dashed border-accent/40 last:border-0">
               <Link
                 to={`/alerts/${alert.alert_id}`}
@@ -385,14 +441,14 @@ function GroupRow({
                     ` · ${t('alerts.score', { score: formatNumber(alert.score, language, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) })}`}
                 </span>
                 <span className="col-start-2 flex gap-1.5 md:col-start-auto">
-                  {showStatus && <AlertStatusBadge status={alert.status} />}
-                  {!showStatus && <SeverityBadge severity={alert.severity} />}
+                  <SeverityBadge severity={alert.severity} />
+                  <AlertStatusBadge status={alert.status} />
                 </span>
               </Link>
             </li>
           ))}
         </ul>
       )}
-    </li>
+    </div>
   );
 }

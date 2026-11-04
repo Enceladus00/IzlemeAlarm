@@ -4,7 +4,10 @@ import { dashboardFixture, latestAlertsFixture, systemOverviewFixture } from './
 
 export const API = 'http://localhost:3000/api';
 
+/** Mirrors alembic 0007: during development the administrator has every permission. */
 export const ADMIN_PERMISSIONS = [
+  'alert:confirm',
+  'alert:escalate',
   'alert:update',
   'alert:view',
   'audit:view',
@@ -17,12 +20,22 @@ export const ADMIN_PERMISSIONS = [
   'upload:view',
   'user:manage',
 ];
-export const ANALYST_PERMISSIONS = ['alert:update', 'alert:view', 'dashboard:view'];
+export const ANALYST_PERMISSIONS = ['alert:escalate', 'alert:update', 'alert:view', 'dashboard:view', 'rule:view'];
+export const COMPLIANCE_PERMISSIONS = [
+  'alert:confirm',
+  'alert:view',
+  'audit:view',
+  'customer:view',
+  'dashboard:view',
+  'rule:edit',
+  'rule:view',
+];
 
 /** Users accepted by the mock /auth/login. Password is always "secret". */
 export const MOCK_USERS: Record<string, { role_code: string; permissions: string[] }> = {
   admin: { role_code: 'admin', permissions: ADMIN_PERMISSIONS },
   'ayse.karaca': { role_code: 'analyst', permissions: ANALYST_PERMISSIONS },
+  'mehmet.ozturk': { role_code: 'compliance', permissions: COMPLIANCE_PERMISSIONS },
   nobody: { role_code: 'analyst', permissions: [] },
   viewer: { role_code: 'auditor', permissions: ['dashboard:view'] },
   reviewer: { role_code: 'auditor', permissions: ['alert:view'] },
@@ -60,6 +73,7 @@ export const handlers = [
   http.get(`${API}/dashboard/summary`, () => HttpResponse.json(dashboardFixture)),
   http.get(`${API}/alerts`, () => HttpResponse.json(latestAlertsFixture)),
   http.get(`${API}/admin/system-overview`, () => HttpResponse.json(systemOverviewFixture)),
+  http.get(`${API}/uploads`, () => HttpResponse.json([])),
 ];
 
 export const server = setupServer(...handlers);

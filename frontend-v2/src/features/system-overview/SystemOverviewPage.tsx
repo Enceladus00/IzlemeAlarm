@@ -8,12 +8,11 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardHeader } from '@/components/ui/Card';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { PageHeader } from '@/components/ui/PageHeader';
-import { Placeholder } from '@/components/ui/Placeholder';
 import { cn } from '@/utils/cn';
 import { formatDateTime, formatNumber } from '@/utils/format';
 import { useApiHealth, useSystemOverview } from './api';
 
-type Health = 'ok' | 'down' | 'unknown' | 'loading';
+type Health = 'ok' | 'warning' | 'down' | 'unknown' | 'loading';
 
 const RECORD_KEYS = ['customers', 'accounts', 'transactions', 'alerts'] as const;
 
@@ -31,7 +30,13 @@ function HealthCard({
   /** Keep the headline in body ink (for counts rather than up/down states). */
   neutralHeadline?: boolean;
 }) {
-  const dot = { ok: 'bg-success', down: 'bg-danger', unknown: 'bg-status-neutral', loading: 'bg-neutral-soft' }[status];
+  const dot = {
+    ok: 'bg-success',
+    warning: 'bg-warning',
+    down: 'bg-danger',
+    unknown: 'bg-status-neutral',
+    loading: 'bg-neutral-soft',
+  }[status];
   return (
     <div className="rounded-lg border border-border bg-surface px-4 py-4">
       <p className="flex items-center gap-2 text-sm font-semibold">
@@ -48,7 +53,15 @@ function HealthCard({
           <p
             className={cn(
               'mt-2 text-xl font-semibold',
-              neutralHeadline ? 'text-fg' : status === 'ok' ? 'text-success' : status === 'down' ? 'text-danger' : 'text-fg',
+              neutralHeadline
+                ? 'text-fg'
+                : status === 'ok'
+                  ? 'text-success'
+                  : status === 'warning'
+                    ? 'text-warning'
+                    : status === 'down'
+                      ? 'text-danger'
+                      : 'text-fg',
             )}
           >
             {headline}
@@ -114,13 +127,13 @@ export default function SystemOverviewPage() {
         />
         <HealthCard
           title={t('system.schema')}
-          status={data ? (data.health.schema_revision ? 'ok' : 'unknown') : overview.isError ? 'unknown' : 'loading'}
+          status={schemaStatus(data, overview.isError)}
           headline={
-            data?.health.schema_revision ? (
-              <Placeholder className="text-base">{t('system.schemaUpToDate')}</Placeholder>
-            ) : (
-              t('system.schemaUnknown')
-            )
+            data?.health.schema_revision && data.health.schema_head
+              ? data.health.schema_revision === data.health.schema_head
+                ? t('system.schemaUpToDate')
+                : t('system.schemaOutdated', { head: data.health.schema_head })
+              : t('system.schemaUnknown')
           }
           caption={
             data?.health.schema_revision ? (
@@ -198,6 +211,13 @@ export default function SystemOverviewPage() {
       )}
     </>
   );
+}
+
+function schemaStatus(data: SystemOverview | undefined, isError: boolean): Health {
+  if (!data) return isError ? 'unknown' : 'loading';
+  const { schema_revision, schema_head } = data.health;
+  if (!schema_revision || !schema_head) return 'unknown';
+  return schema_revision === schema_head ? 'ok' : 'warning';
 }
 
 function CellSkeleton() {

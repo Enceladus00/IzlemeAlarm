@@ -25,10 +25,38 @@ export type Transaction = z.infer<typeof transactionSchema>;
 export const transactionPageSchema = pageSchema(transactionSchema);
 export type TransactionPage = z.infer<typeof transactionPageSchema>;
 
-/** GET /alerts/{id}/customer-transactions and GET /customers/{no}/transactions */
-export const customerHistorySchema = z.object({
-  customer_no: z.string(),
-  customer_name: z.string(),
-  items: z.array(transactionSchema),
+/** GET /transactions/summary (K12): totals over every matching transfer, computed by the API. */
+export const transactionSummarySchema = z.object({
+  transfer_count: z.number(),
+  account_count: z.number(),
+  by_currency: z.array(
+    z.object({
+      currency: z.string(),
+      total: decimal,
+      incoming: decimal.nullable(),
+      outgoing: decimal.nullable(),
+      count: z.number(),
+      incoming_count: z.number().nullable(),
+      outgoing_count: z.number().nullable(),
+    }),
+  ),
+  timeline: z.object({
+    granularity: z.enum(['day', 'week']),
+    points: z.array(z.object({ date: z.string(), count: z.number() })),
+  }),
+  /** Account labels are masked by the API ("TR…4410"); no names are sent. */
+  routes: z.array(
+    z.object({
+      sender_account: z.string(),
+      receiver_account: z.string(),
+      sender_is_focus: z.boolean(),
+      receiver_is_focus: z.boolean(),
+      currency: z.string(),
+      count: z.number(),
+      amount: decimal,
+      alert_linked: z.number(),
+    }),
+  ),
+  other_routes: z.object({ route_count: z.number(), count: z.number() }),
 });
-export type CustomerHistory = z.infer<typeof customerHistorySchema>;
+export type TransactionSummary = z.infer<typeof transactionSummarySchema>;

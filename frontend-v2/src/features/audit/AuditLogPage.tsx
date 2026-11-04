@@ -12,6 +12,8 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { PageHeader } from '@/components/ui/PageHeader';
+import { Field } from '@/components/ui/Field';
+import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { PageSpinner } from '@/components/ui/Spinner';
 import { useUsers } from '@/features/users/api';
@@ -19,20 +21,63 @@ import { cn } from '@/utils/cn';
 import { formatDateTime } from '@/utils/format';
 
 const PAGE_SIZES = [50, 100, 200] as const;
-const KNOWN_ACTIONS = ['LOGIN_SUCCESS', 'LOGIN_FAILED', 'ACCESS_DENIED', 'USER_CREATED', 'USER_UPDATED'] as const;
+/** Event types with a Turkish label (API design 7.17). Keys use '_' for '.'. */
+const KNOWN_ACTIONS = [
+  'LOGIN_SUCCESS',
+  'LOGIN_FAILED',
+  'ACCESS_DENIED',
+  'USER_CREATED',
+  'USER_UPDATED',
+  'csv.uploaded',
+  'detection.auto_run',
+  'detection.run',
+  'rule.updated',
+  'alert.status_changed',
+  'alert.note_added',
+  'alert.rescored',
+  'alert.severity_raised',
+  'customer.viewed',
+  'role.permissions_changed',
+] as const;
 const ACTION_TONE: Record<string, 'success' | 'danger' | 'info' | 'neutral'> = {
   LOGIN_SUCCESS: 'success',
   LOGIN_FAILED: 'danger',
   ACCESS_DENIED: 'danger',
   USER_CREATED: 'info',
   USER_UPDATED: 'info',
+  'alert.status_changed': 'info',
+  'rule.updated': 'info',
 };
+/** K6: customer views are numerous, so the screen hides them unless asked. */
+const VIEW_ACTION = 'customer.viewed';
+const DEFAULT_DAYS = 30;
 
-/** GET /audit-log — requires audit:view; paged on the server (newest first). */
-function useAuditLog(offset: number, limit: number) {
+function actionKey(action: string): string {
+  return action.replace(/\./g, '_');
+}
+
+function isoDaysAgo(days: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+interface AuditQuery {
+  offset: number;
+  limit: number;
+  actor_id?: string;
+  action?: string;
+  exclude_action?: string;
+  entity_id?: string;
+  date_from?: string;
+  date_to?: string;
+}
+
+/** GET /audit-log — requires audit:view; filtered and paged on the server (newest first). */
+function useAuditLog(query: AuditQuery) {
   return useQuery({
-    queryKey: ['audit', offset, limit],
-    queryFn: ({ signal }) => apiRequest('/audit-log', { query: { offset, limit }, schema: auditPageSchema, signal }),
+    queryKey: ['audit', query],
+    queryFn: ({ signal }) => apiRequest('/audit-log', { query: { ...query }, schema: auditPageSchema, signal }),
     placeholderData: keepPreviousData,
   });
 }
@@ -45,21 +90,95 @@ export default function AuditLogPage() {
   const limit = PAGE_SIZES.find((size) => String(size) === params.get('limit')) ?? 50;
   const page = Math.max(1, Number.parseInt(params.get('page') ?? '1', 10) || 1);
   const offset = (page - 1) * limit;
-  const audit = useAuditLog(offset, limit);
-  // Usernames come from /users, which needs user:manage; otherwise show the id.
+  // Filters live in the URL: actor, type (''=all but customer views, 'all', or one action),
+  // record (entity_id) and date range (default: last 30 days).
+  const actorFilter = params.get('actor') ?? '';
+  const typeFilter = params.get('type') ?? '';
+  const entityFilter = params.get('entity') ?? '';
+  const dateFrom = params.get('from') ?? isoDaysAgo(DEFAULT_DAYS - 1);
+  const dateTo = params.get('to') ?? '';
+  const [entityDraft, setEntityDraft] = useState(entityFilter);
+  const query: AuditQuery = {
+    offset,
+    limit,
+    actor_id: actorFilter || undefined,
+    action: typeFilter && typeFilter !== 'all' ? typeFilter : undefined,
+    exclude_action: typeFilter === '' ? VIEW_ACTION : undefined,
+    entity_id: entityFilter || undefined,
+    date_from: dateFrom || undefined,
+    date_to: dateTo || undefined,
+  };
+  const audit = useAuditLog(query);
+  // Account list for the actor filter (user:manage only); names in rows come from the API.
   const users = useUsers(can('user:manage'));
   const [open, setOpen] = useState<ReadonlySet<number>>(new Set());
 
-  const goTo = (nextPage: number, nextLimit: number = limit) =>
+  const update = (patch: Record<string, string | null>, keepPage = false) =>
     setParams(
-      () => {
-        const next = new URLSearchParams();
-        if (nextPage > 1) next.set('page', String(nextPage));
-        if (nextLimit !== 50) next.set('limit', String(nextLimit));
+      (current) => {
+        const next = new URLSearchParams(current);
+        for (const [key, value] of Object.entries(patch)) {
+          if (value === null || value === '') next.delete(key);
+          else next.set(key, value);
+        }
+        if (!keepPage) next.delete('page');
         return next;
       },
       { replace: true },
     );
+  const goTo = (nextPage: number, nextLimit: number = limit) =>
+    update({ page: nextPage > 1 ? String(nextPage) : null, limit: nextLimit !== 50 ? String(nextLimit) : null }, true);
+
+  const actorOptions = new Map<string, string>();
+  for (const user of users.data ?? []) actorOptions.set(String(user.user_id), user.username);
+  for (const event of audit.data?.items ?? []) {
+    if (event.actor_id !== null && event.actor_name) actorOptions.set(String(event.actor_id), event.actor_name);
+  }
+  if (actorFilter && !actorOptions.has(actorFilter)) actorOptions.set(actorFilter, t('audit.unknownActor', { id: actorFilter }));
+
+  const filters = (
+    <Card className="mb-4 grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5">
+      <Field label={t('audit.filters.actor')}>
+        <Select value={actorFilter} onChange={(event) => update({ actor: event.target.value })}>
+          <option value="">{t('audit.filters.all')}</option>
+          {[...actorOptions].map(([id, name]) => (
+            <option key={id} value={id}>
+              {name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label={t('audit.filters.type')}>
+        <Select value={typeFilter} onChange={(event) => update({ type: event.target.value })}>
+          <option value="">{t('audit.filters.allButViews')}</option>
+          <option value="all">{t('audit.filters.all')}</option>
+          {KNOWN_ACTIONS.map((action) => (
+            <option key={action} value={action}>
+              {t(`audit.actions.${actionKey(action) as 'LOGIN_SUCCESS'}`)}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label={t('audit.filters.entity')}>
+        <Input
+          value={entityDraft}
+          maxLength={50}
+          placeholder={t('audit.filters.entityPlaceholder')}
+          onChange={(event) => setEntityDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') update({ entity: entityDraft.trim() });
+          }}
+          onBlur={() => update({ entity: entityDraft.trim() })}
+        />
+      </Field>
+      <Field label={t('audit.filters.from')}>
+        <Input type="date" value={dateFrom} max={dateTo || undefined} onChange={(event) => update({ from: event.target.value || '' })} />
+      </Field>
+      <Field label={t('audit.filters.to')}>
+        <Input type="date" value={dateTo} min={dateFrom || undefined} onChange={(event) => update({ to: event.target.value })} />
+      </Field>
+    </Card>
+  );
 
   const header = <PageHeader breadcrumb={t('audit.breadcrumb')} title={t('nav.audit')} description={t('audit.description')} />;
   if (audit.isPending) return <PageSpinner label={t('common.loading')} />;
@@ -67,6 +186,7 @@ export default function AuditLogPage() {
     return (
       <>
         {header}
+        {filters}
         <ErrorState error={audit.error} onRetry={() => void audit.refetch()} />
       </>
     );
@@ -76,11 +196,10 @@ export default function AuditLogPage() {
   const lastPage = Math.max(1, Math.ceil(total / limit));
   const actorName = (event: AuditEvent) => {
     if (event.actor_id === null) return <span className="text-muted">{t('audit.system')}</span>;
-    const user = users.data?.find((candidate) => candidate.user_id === event.actor_id);
-    return user ? user.username : t('audit.unknownActor', { id: event.actor_id });
+    return event.actor_name ?? t('audit.unknownActor', { id: event.actor_id });
   };
   const actionLabel = (action: string) =>
-    (KNOWN_ACTIONS as readonly string[]).includes(action) ? t(`audit.actions.${action as 'LOGIN_SUCCESS'}`) : action;
+    (KNOWN_ACTIONS as readonly string[]).includes(action) ? t(`audit.actions.${actionKey(action) as 'LOGIN_SUCCESS'}`) : action;
 
   const toggle = (id: number) =>
     setOpen((current) => {
@@ -122,6 +241,7 @@ export default function AuditLogPage() {
   return (
     <>
       {header}
+      {filters}
       <Card className={cn(audit.isPlaceholderData && 'opacity-70')}>
         {items.length === 0 ? (
           <EmptyState icon={History} title={t('audit.empty')} />

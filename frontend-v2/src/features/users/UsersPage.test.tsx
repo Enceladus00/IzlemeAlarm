@@ -84,7 +84,7 @@ describe('User management', () => {
     await user.type(within(dialog).getByLabelText('İlk parola'), 'x');
     await user.click(within(dialog).getByRole('button', { name: 'Kullanıcı oluştur' }));
     expect(await within(dialog).findByText('Username already exists.')).toBeInTheDocument();
-    expect(within(dialog).getByText('Kayıt çakışması: bu değer zaten kullanılıyor.')).toBeInTheDocument();
+    expect(within(dialog).getByText('Bu kullanıcı adı kullanılıyor.')).toBeInTheDocument();
   });
 
   it('sends only changed fields when editing', async () => {
@@ -106,6 +106,9 @@ describe('User management', () => {
     storeSession('admin');
     const { user } = renderApp('/users');
     await user.click(await screen.findByRole('button', { name: 'admin kullanıcısını düzenle' }));
-    expect(within(screen.getByRole('dialog')).getByText(/Kendi hesabınızı düzenliyorsunuz/)).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText(/Kendi hesabınızı düzenliyorsunuz/)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('Rol')).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Kullanıcıyı kaydet' })).toBeDisabled();
   });
 });

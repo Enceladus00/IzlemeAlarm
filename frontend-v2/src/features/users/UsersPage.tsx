@@ -46,7 +46,12 @@ export default function UsersPage() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const roleName = (code: string) => {
-    const known = { admin: t('roles.admin'), analyst: t('roles.analyst'), auditor: t('roles.auditor') } as Record<string, string>;
+    const known = {
+      admin: t('roles.admin'),
+      analyst: t('roles.analyst'),
+      auditor: t('roles.auditor'),
+      compliance: t('roles.compliance'),
+    } as Record<string, string>;
     return known[code] ?? roles.data?.find((role) => role.role_code === code)?.name ?? code;
   };
 
@@ -292,6 +297,7 @@ function EditUserDialog({
         <Field label={t('users.role')}>
           <Select
             value={roleCode}
+            disabled={isSelf}
             onChange={(event) => {
               setRoleCode(event.target.value);
               setUnchanged(false);
@@ -309,6 +315,7 @@ function EditUserDialog({
             type="checkbox"
             className="size-4 accent-[var(--accent)]"
             checked={active}
+            disabled={isSelf}
             onChange={(event) => {
               setActive(event.target.checked);
               setUnchanged(false);
@@ -320,7 +327,7 @@ function EditUserDialog({
         {update.isError && <ErrorState error={update.error} title={t('errors.validation')} />}
         <div className="flex justify-end gap-2">
           <Button onClick={onClose}>{t('users.cancel')}</Button>
-          <Button variant="primary" loading={update.isPending} onClick={save}>
+          <Button variant="primary" loading={update.isPending} disabled={isSelf} onClick={save}>
             {t('users.save')}
           </Button>
         </div>

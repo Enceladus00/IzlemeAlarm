@@ -6,6 +6,7 @@
 import {
   CUSTOMER_TYPES,
   PARAMETER_STATUSES,
+  REASON_MAX_LENGTH,
   type CustomerType,
   type ParameterStatus,
   type Rule,
@@ -39,7 +40,15 @@ export const BOUNDS: Record<string, [number | null, number | null]> = {
   min_retained: [0, 1],
   pingpong_tolerance: [0, null],
   gamma: [0, 1],
+  round_unit: [0.000001, null],
+  min_rules: [2, null],
+  p: [1, null],
+  alert_threshold: [0.000001, 1],
 };
+
+/** Rules whose x_esik / x_kesin are shares between 0 and 1. */
+export const RATIO_ANCHOR_RULES = new Set(['S1']);
+export const OPEN_STATUSES = ['new', 'in_review'] as const;
 
 /** Names with dedicated inputs; everything else is a bounded number. */
 export const SPECIAL_NAMES = new Set([
@@ -55,6 +64,9 @@ export const SPECIAL_NAMES = new Set([
   'cash_accounts',
   'season_factor',
   'suspicious_status',
+  'countries',
+  'excluded_rules',
+  'open_statuses',
 ]);
 
 export interface LimitRow {
@@ -72,12 +84,19 @@ export interface TypeDraft {
   cashAccounts: string;
   seasonFactor: string;
   suspiciousStatus: string;
+  /** R16: comma-separated ISO country codes. */
+  countries: string;
+  /** R17: comma-separated rule codes. */
+  excludedRules: string;
+  openStatuses: string[];
 }
 
 export interface RuleDraft {
   isActive: boolean;
   weight: string;
   types: Record<CustomerType, TypeDraft>;
+  /** K5: required reason for the change. */
+  reason: string;
 }
 
 export type FieldError =
@@ -95,7 +114,12 @@ export type FieldError =
   | { key: 'channelsRequired' }
   | { key: 'cashAccounts' }
   | { key: 'cashAccountsUnique' }
-  | { key: 'seasonFactor' };
+  | { key: 'seasonFactor' }
+  | { key: 'countries' }
+  | { key: 'ruleCodes' }
+  | { key: 'statusesRequired' }
+  | { key: 'reasonRequired' }
+  | { key: 'reasonTooLong'; max: number };
 
 /** Errors keyed by "<customerType>.<field>" or "weight"/"active". */
 export type DraftErrors = Record<string, FieldError>;
@@ -130,7 +154,12 @@ export function draftFromRule(rule: Rule): RuleDraft {
       .map(([currency, amount]) => ({ currency, amount: text(amount) }));
     const numbers: Record<string, string> = {};
     for (const parameter of parameters) {
-      if (parameter.name === 'limits' || ['income_currency', 'cash_channels', 'cash_accounts', 'season_factor', 'suspicious_status'].includes(parameter.name)) {
+      if (
+        parameter.name === 'limits' ||
+        ['income_currency', 'cash_channels', 'cash_accounts', 'season_factor', 'suspicious_status', 'countries', 'excluded_rules', 'open_statuses'].includes(
+          parameter.name,
+        )
+      ) {
         continue;
       }
       numbers[parameter.name] = text(values[parameter.name]);
@@ -152,9 +181,18 @@ export function draftFromRule(rule: Rule): RuleDraft {
         .map(([date, factor]) => `${date}=${text(factor)}`)
         .join('\n'),
       suspiciousStatus: 'confirmed_suspicious',
+      countries: Array.isArray(values.countries) ? values.countries.join(', ') : '',
+      excludedRules: Array.isArray(values.excluded_rules)
+        ? values.excluded_rules.join(', ')
+        : hasParam(parameters, 'excluded_rules')
+          ? 'R02, R17, R18'
+          : '',
+      openStatuses: Array.isArray(values.open_statuses)
+        ? values.open_statuses.map(String).filter((s) => (OPEN_STATUSES as readonly string[]).includes(s))
+        : [...OPEN_STATUSES],
     };
   }
-  return { isActive: rule.is_active, weight: text(rule.weight ?? '0'), types };
+  return { isActive: rule.is_active, weight: text(rule.weight ?? '0'), types, reason: '' };
 }
 
 function parseNumber(raw: string): number | null {
@@ -227,8 +265,9 @@ function buildTypeValues(
 
   if (names.has('x_esik') && names.has('x_kesin')) {
     const integer = integerAnchors(parameters);
-    const esik = checkNumber(draft.numbers.x_esik ?? '', { min: 0, max: null, integer });
-    const kesin = checkNumber(draft.numbers.x_kesin ?? '', { min: integer ? 1 : 0.0001, max: null, integer });
+    const ratio = RATIO_ANCHOR_RULES.has(ruleCode);
+    const esik = checkNumber(draft.numbers.x_esik ?? '', { min: 0, max: ratio ? 1 : null, integer });
+    const kesin = checkNumber(draft.numbers.x_kesin ?? '', { min: integer ? 1 : 0.0001, max: ratio ? 1 : null, integer });
     if (esik.error) fail('x_esik', esik.error);
     if (kesin.error) fail('x_kesin', kesin.error);
     if (!esik.error && !kesin.error && kesin.value! <= esik.value!) fail('x_kesin', { key: 'anchorsOrder' });
@@ -286,6 +325,27 @@ function buildTypeValues(
 
   if (names.has('suspicious_status')) values.suspicious_status = draft.suspiciousStatus;
 
+  if (names.has('countries')) {
+    const codes = draft.countries.split(',').map((part) => part.trim().toUpperCase()).filter(Boolean);
+    if (codes.length === 0 || codes.some((code) => !/^[A-Z]{2}$/.test(code)) || new Set(codes).size !== codes.length) {
+      fail('countries', { key: 'countries' });
+    }
+    values.countries = codes;
+  }
+
+  if (names.has('excluded_rules')) {
+    const codes = draft.excludedRules.split(',').map((part) => part.trim().toUpperCase()).filter(Boolean);
+    if (codes.some((code) => !/^(R\d{1,2}|S\d)$/.test(code)) || new Set(codes).size !== codes.length) {
+      fail('excluded_rules', { key: 'ruleCodes' });
+    }
+    values.excluded_rules = codes;
+  }
+
+  if (names.has('open_statuses')) {
+    if (draft.openStatuses.length === 0) fail('open_statuses', { key: 'statusesRequired' });
+    values.open_statuses = OPEN_STATUSES.filter((status) => draft.openStatuses.includes(status));
+  }
+
   for (const parameter of parameters) {
     if (SPECIAL_NAMES.has(parameter.name)) continue;
     const [min, max] = BOUNDS[parameter.name] ?? [null, null];
@@ -313,6 +373,27 @@ export function buildRuleUpdate(rule: Rule, draft: RuleDraft): { errors: DraftEr
   if (draft.isActive && CUSTOMER_TYPES.every((type) => draft.types[type].status === 'UNSET')) {
     errors.active = { key: 'required' };
   }
+  const reason = draft.reason.trim();
+  if (!reason) errors.reason = { key: 'reasonRequired' };
+  else if (reason.length > REASON_MAX_LENGTH) errors.reason = { key: 'reasonTooLong', max: REASON_MAX_LENGTH };
   if (Object.keys(errors).length > 0) return { errors, payload: null };
-  return { errors, payload: { is_active: draft.isActive, weight: weight.value!, thresholds } };
+  return { errors, payload: { is_active: draft.isActive, weight: weight.value!, thresholds, reason } };
+}
+
+/** K11: copy the individual (BIREYSEL) settings to corporate (KURUMSAL). */
+export function copyIndividualToCorporate(draft: RuleDraft): RuleDraft {
+  const source = draft.types.BIREYSEL;
+  return {
+    ...draft,
+    types: {
+      ...draft.types,
+      KURUMSAL: {
+        ...source,
+        limits: source.limits.map((row) => ({ ...row })),
+        numbers: { ...source.numbers },
+        cashChannels: [...source.cashChannels],
+        openStatuses: [...source.openStatuses],
+      },
+    },
+  };
 }

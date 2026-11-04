@@ -20,7 +20,7 @@ import { Spinner } from '@/components/ui/Spinner';
 import { StatCard } from '@/components/ui/StatCard';
 import { cn } from '@/utils/cn';
 import { formatDate, formatMoney, formatNumber } from '@/utils/format';
-import { TX_PAGE_SIZE, useFocusedTransfers, useTransactions } from './api';
+import { TX_PAGE_SIZE, useTransactionSummary, useTransactions } from './api';
 import {
   EMPTY_TX_FILTERS,
   parseTxFilters,
@@ -30,9 +30,9 @@ import {
   type Direction,
   type TxFilters,
 } from './filters';
-import { buildFlowLayout, centsToDecimal } from './flow';
+import { buildFlowLayoutFromRoutes, centsToDecimal, toCents } from './flow';
 import { FlowDiagram, FlowRouteTable } from './FlowDiagram';
-import { activityTimeline, focusOptions, summarizeTransfers, type CurrencyTotal, type FocusOption } from './summary';
+import { focusOptions, type CurrencyTotal, type FocusOption } from './summary';
 
 function moneyList(totals: CurrencyTotal[], language: string): string {
   if (totals.length === 0) return '0';
@@ -193,9 +193,29 @@ function Results({
   language: string;
 }) {
   const { t } = useTranslation();
-  const summary = summarizeTransfers(transactions, customerNo);
-  const timeline = activityTimeline(transactions);
+  // K12: totals, timeline and flow come from the server over every matching transfer.
+  const serverSummary = useTransactionSummary(baseQuery);
   const fmt = (value: number) => formatNumber(value, language);
+  if (serverSummary.isError) return <ErrorState error={serverSummary.error} onRetry={() => void serverSummary.refetch()} />;
+  if (!serverSummary.data) return <div className="h-40 animate-pulse rounded-md bg-neutral-soft" aria-hidden />;
+  const data = serverSummary.data;
+  const focused = data.by_currency.some((row) => row.incoming !== null);
+  const totalsOf = (pick: (row: (typeof data.by_currency)[number]) => { amount: string | null; count: number | null }): CurrencyTotal[] =>
+    data.by_currency
+      .map((row) => ({ currency: row.currency, ...pick(row) }))
+      .filter((row) => row.count)
+      .map((row) => ({ currency: row.currency, count: row.count ?? 0, cents: toCents(row.amount ?? '0') }));
+  const summary = {
+    count: data.transfer_count,
+    uniqueAccounts: data.account_count,
+    totals: focused ? null : totalsOf((row) => ({ amount: row.total, count: row.count })),
+    incoming: focused ? totalsOf((row) => ({ amount: row.incoming, count: row.incoming_count })) : null,
+    outgoing: focused ? totalsOf((row) => ({ amount: row.outgoing, count: row.outgoing_count })) : null,
+  };
+  const timeline = {
+    granularity: data.timeline.granularity,
+    buckets: data.timeline.points.map((point) => ({ date: point.date, count: point.count })),
+  };
 
   const directionBars = summary.totals
     ? summary.totals.map((row) => ({ key: row.currency, label: <span className="font-mono">{row.currency}</span>, value: row.count }))
@@ -217,7 +237,6 @@ function Results({
   return (
     <div className="space-y-4">
       <p className="text-xs text-muted">{t('txAnalysis.summary', { total, shown: transactions.length })}</p>
-      {transactions.length < total && <InlineAlert tone="warning">{t('txAnalysis.partialNote')}</InlineAlert>}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label={t('txAnalysis.metricTransfers')} value={fmt(summary.count)} />
@@ -348,8 +367,11 @@ function AccountMovement({
         [focus.type === 'customer' ? 'customer_no' : 'account_no']: focus.id,
       }
     : null;
-  const focused = useFocusedTransfers(focusQuery);
-  const layout = focused.data && focus ? buildFlowLayout(focused.data.items, focus.type, focus.id) : null;
+  const focused = useTransactionSummary(focusQuery);
+  const layout =
+    focused.data && focus
+      ? buildFlowLayoutFromRoutes(focused.data.routes, { focus: focus.name, counterparty: t('txAnalysis.counterparty') })
+      : null;
   const optionLabel = (option: FocusOption) =>
     option.type === 'customer'
       ? t('txAnalysis.focusCustomer', { name: option.name, id: option.id })
@@ -390,9 +412,12 @@ function AccountMovement({
           <InlineAlert tone="info">{t('txAnalysis.focusEmpty')}</InlineAlert>
         ) : (
           <div className={cn(focused.isFetching && 'opacity-70')}>
-            {focused.data.capped && (
-              <InlineAlert tone="warning" className="mb-3">
-                {t('txAnalysis.focusCapped', { count: focused.data.items.length })}
+            {focused.data.other_routes.route_count > 0 && (
+              <InlineAlert tone="info" className="mb-3">
+                {t('txAnalysis.otherRoutes', {
+                  routes: focused.data.other_routes.route_count,
+                  count: focused.data.other_routes.count,
+                })}
               </InlineAlert>
             )}
             <ChartTableToggle
@@ -407,9 +432,9 @@ function AccountMovement({
             <p className="mt-3 text-xs text-muted">
               {t('txAnalysis.focusCaption', {
                 name: focus.name,
-                count: focused.data.items.length,
+                count: focused.data.transfer_count,
                 routes: layout.routes.length,
-                accounts: layout.involvedAccounts,
+                accounts: focused.data.account_count,
               })}
             </p>
           </div>

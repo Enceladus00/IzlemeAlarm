@@ -47,11 +47,19 @@ class AuthService:
             or not user.is_active
             or not user.role.is_active
         ):
+            # Never store the supplied username verbatim: users sometimes type
+            # their password into the username field. Only a username that
+            # matches an existing account is recorded (taken from the database).
             self._audit.write_event(
                 action="LOGIN_FAILED",
                 entity_type="auth",
+                entity_id=None if user is None else str(user.user_id),
                 actor_id=None,
-                details={"username": username},
+                details=(
+                    {"username": None, "unknown_user": True}
+                    if user is None
+                    else {"username": user.username, "unknown_user": False}
+                ),
             )
             return None
 
@@ -60,7 +68,7 @@ class AuthService:
             entity_type="auth",
             entity_id=str(user.user_id),
             actor_id=user.user_id,
-            details={"username": username},
+            details={"username": user.username},
         )
         return create_access_token(user.user_id)
 

@@ -14,6 +14,8 @@ const DetectionOverview = lazy(() => import('@/features/detection-overview/Detec
 const SystemOverview = lazy(() => import('@/features/system-overview/SystemOverviewPage'));
 const AlertQueue = lazy(() => import('@/features/alerts/AlertQueuePage'));
 const AlertDetail = lazy(() => import('@/features/alerts/AlertDetailPage'));
+const Customers = lazy(() => import('@/features/customers/CustomersPage'));
+const CustomerDetail = lazy(() => import('@/features/customers/CustomerDetailPage'));
 const TransactionAnalysis = lazy(() => import('@/features/transactions/TransactionAnalysisPage'));
 const DataManagement = lazy(() => import('@/features/data-management/DataManagementPage'));
 const DemoLab = lazy(() => import('@/features/demo-lab/DemoLabPage'));
@@ -28,6 +30,7 @@ const PAGES: Record<NavId, PageComponent> = {
   detectionOverview: DetectionOverview,
   alerts: AlertQueue,
   transactions: TransactionAnalysis,
+  customers: Customers,
   dataManagement: DataManagement,
   demoLab: DemoLab,
   rules: Rules,
@@ -39,6 +42,7 @@ const PAGES: Record<NavId, PageComponent> = {
 /** Nested screens that share a navigation item (and its permission). */
 const SUB_ROUTES: Array<{ path: string; parent: NavId; page: PageComponent }> = [
   { path: 'alerts/:alertId', parent: 'alerts', page: AlertDetail },
+  { path: 'customers/:customerNo', parent: 'customers', page: CustomerDetail },
 ];
 
 function PageFallback() {

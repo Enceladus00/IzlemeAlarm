@@ -51,7 +51,11 @@ export interface RuleUpdate {
   is_active: boolean;
   weight: number;
   thresholds: Record<CustomerType, CustomerTypeThresholds>;
+  /** K5: why the rule was changed (1–500 characters, written to the audit log). */
+  reason: string;
 }
+
+export const REASON_MAX_LENGTH = 500;
 
 export const ruleUpdateResultSchema = z.object({
   rule_code: z.string(),

@@ -8,6 +8,7 @@ from backend.api.dependencies import (
     get_rule_service,
     require_permission,
 )
+from backend.api.responses import RuleView
 from backend.api_schemas import RuleUpdate
 from backend.services.detection_service import DetectionService
 from backend.services.rule_service import (
@@ -32,13 +33,13 @@ def list_rules(
         raise HTTPException(status_code=503, detail="Could not load rules.") from exc
 
 
-@router.put("/rules/{rule_code}")
+@router.put("/rules/{rule_code}", response_model=RuleView)
 def update_rule(
     rule_code: str,
     update: RuleUpdate,
     user: AuthenticatedUser = Depends(require_permission("rule:edit")),
     service: RuleService = Depends(get_rule_service),
-) -> dict[str, Any]:
+) -> Any:
     try:
         return service.update_rule(
             rule_code,
@@ -46,6 +47,7 @@ def update_rule(
             update.is_active,
             user.user_id,
             update.weight,
+            update.reason,
         )
     except RuleNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

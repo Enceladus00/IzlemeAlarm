@@ -21,6 +21,10 @@ class InvalidUserInput(ValueError):
     pass
 
 
+class SelfUpdateForbidden(PermissionError):
+    pass
+
+
 class UserService:
     def __init__(self, repository: SqlAlchemyUserRepository) -> None:
         self._repository = repository
@@ -72,6 +76,9 @@ class UserService:
     ) -> dict[str, Any]:
         if role_code is None and is_active is None:
             raise InvalidUserInput("Provide a role_code or is_active update.")
+        if user_id == actor_id:
+            # The only administrator could otherwise lock everyone out.
+            raise SelfUpdateForbidden("You cannot change your own role or status.")
         user = self._repository.get_user(user_id)
         if user is None:
             raise UserNotFound("User not found.")

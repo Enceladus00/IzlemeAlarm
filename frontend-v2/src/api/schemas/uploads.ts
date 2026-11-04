@@ -30,5 +30,22 @@ export type UploadResult = z.infer<typeof uploadResultSchema>;
 export const uploadReportSchema = uploadResultSchema.extend({
   file_name: z.string().nullable(),
   uploaded_at: apiDateTime.nullable(),
+  /** K13: row contents are returned only to the user who uploaded the file. */
+  own_upload: z.boolean(),
 });
 export type UploadReport = z.infer<typeof uploadReportSchema>;
+
+/** GET /uploads (newest first) */
+export const uploadHistorySchema = z.array(
+  z.object({
+    batch_id: z.number(),
+    entity_type: z.string(),
+    file_name: z.string(),
+    total_rows: z.number(),
+    accepted_rows: z.number(),
+    rejected_rows: z.number(),
+    uploaded_at: apiDateTime,
+    uploaded_by_name: z.string().nullable(),
+  }),
+);
+export type UploadHistory = z.infer<typeof uploadHistorySchema>;

@@ -1,7 +1,12 @@
 import { screen, waitFor, within } from '@testing-library/react';
-import { alertRequests, alertsHandler, makeAlert, queueAlerts } from '@/test/alertData';
+import { alertRequests, alertsHandler, makeAlert, queueAlerts, queueRequests } from '@/test/alertData';
 import { renderApp, storeSession } from '@/test/render';
 import { server } from '@/test/server';
+
+/** The queue page's own request (the navigation badge also asks with limit=1). */
+function pageRequest() {
+  return queueRequests.find((params) => params.get('limit') === '50')!;
+}
 
 function queueList() {
   return screen.getAllByRole('list').find((list) => list.querySelector('[aria-expanded]'))!;
@@ -9,11 +14,12 @@ function queueList() {
 
 beforeEach(() => {
   alertRequests.length = 0;
-  server.use(alertsHandler());
+  queueRequests.length = 0;
+  server.use(...alertsHandler());
 });
 
-describe('Alert queue', () => {
-  it('groups new alerts by customer in severity/age order with KPI totals', async () => {
+describe('Alert queue (K1: grouped on the server)', () => {
+  it('lists customers in the server order with summary totals', async () => {
     storeSession('ayse.karaca');
     renderApp('/alerts');
 
@@ -27,34 +33,39 @@ describe('Alert queue', () => {
       'Burak Aydın alarmlarını göster',
     ]);
     // 8 new alerts from 5 customers; 3 high from 3 customers.
-    expect(screen.getByText('5 müşteri')).toBeInTheDocument();
-    expect(screen.getByText('3 müşteri')).toBeInTheDocument();
-    expect(screen.getByText('5 müşteri · 8 alarm gösteriliyor')).toBeInTheDocument();
+    expect(screen.getByText('5 müşteri', { selector: 'p' })).toBeInTheDocument();
+    expect(screen.getByText('3 müşteri', { selector: 'p' })).toBeInTheDocument();
+    expect(screen.getByText('5 müşteri · 8 alarm')).toBeInTheDocument();
     expect(screen.getByText('4 gün')).toBeInTheDocument();
-    expect(screen.getAllByText('Bugün').length).toBeGreaterThan(0);
+    expect(screen.getByText('Kurumsal')).toBeInTheDocument();
+    expect(pageRequest().get('status')).toBe('new');
+    expect(pageRequest().get('sort')).toBe('severity_age');
   });
 
-  it('marks fields the API cannot supply as placeholders', async () => {
+  it('fills the personal KPI cards from /dashboard/my-summary', async () => {
+    server.use(...alertsHandler(queueAlerts, { 'C-0877': 'mehmet.ozturk' }));
     storeSession('ayse.karaca');
     renderApp('/alerts');
     await screen.findByText('Ahmet Yılmaz');
-    expect(screen.getByText('Bugün kararlaştırdığım').parentElement!.querySelector('[data-placeholder]')).not.toBeNull();
-    expect(screen.getByText('Bana geri gönderilen').parentElement!.querySelector('[data-placeholder]')).not.toBeNull();
-    expect(document.querySelectorAll('[data-placeholder]').length).toBeGreaterThanOrEqual(7);
+    expect(await screen.findByText('2 alarm uyuma yükseltildi')).toBeInTheDocument();
+    expect(screen.getByText('Geri gönderildi · mehmet.ozturk')).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-placeholder]')).toHaveLength(0);
   });
 
-  it('expands a customer to list each alert with a link to its detail', async () => {
+  it('expands a customer to list its alerts in this status', async () => {
     storeSession('ayse.karaca');
     const { user } = renderApp('/alerts');
     const toggle = await screen.findByRole('button', { name: 'Ahmet Yılmaz alarmlarını göster' });
     await user.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    const links = within(document.getElementById(toggle.getAttribute('aria-controls')!)!).getAllByRole('link');
-    expect(links.map((link) => link.getAttribute('href'))).toEqual(['/alerts/5518', '/alerts/5524', '/alerts/5531']);
-    expect(within(links[2]!).getByText(/skor 0,94/)).toBeInTheDocument();
+    const panel = document.getElementById(toggle.getAttribute('aria-controls')!)!;
+    await waitFor(() => expect(within(panel).getAllByRole('link')).toHaveLength(3));
+    const links = within(panel).getAllByRole('link');
+    expect(links.map((link) => link.getAttribute('href')).sort()).toEqual(['/alerts/5518', '/alerts/5524', '/alerts/5531']);
+    expect(alertRequests.some((params) => params.get('customer_no') === 'C-1042' && params.get('status') === 'new')).toBe(true);
   });
 
-  it('sends chosen filters to the API and keeps them in the URL', async () => {
+  it('sends filters to the server and keeps them in the URL', async () => {
     storeSession('ayse.karaca');
     const { user, router } = renderApp('/alerts');
     await screen.findByText('Ahmet Yılmaz');
@@ -63,67 +74,63 @@ describe('Alert queue', () => {
     await user.click(screen.getByRole('radio', { name: 'Yüksek' }));
 
     await waitFor(() => expect(router.state.location.search).toBe('?severity=high'));
-    await waitFor(() =>
-      expect(alertRequests.some((params) => params.get('severity') === 'high' && params.get('status') === 'new' && params.get('limit') === '200')).toBe(true),
-    );
-    expect(await screen.findByText('3 müşteri · 3 alarm gösteriliyor')).toBeInTheDocument();
+    await waitFor(() => expect(queueRequests.some((params) => params.get('severity') === 'high')).toBe(true));
+    expect(await screen.findByText('3 müşteri · 3 alarm')).toBeInTheDocument();
     expect(screen.queryByText('Mert Demir')).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Filtreleri temizle' }));
     await waitFor(() => expect(router.state.location.search).toBe(''));
   });
 
-  it('shows every status when the status filter is cleared', async () => {
+  it('searches on the server', async () => {
     storeSession('ayse.karaca');
-    const { user } = renderApp('/alerts?status=all');
-    const toggle = await screen.findByRole('button', { name: 'Burak Aydın alarmlarını göster' });
-    await user.click(toggle);
-    expect(within(document.getElementById(toggle.getAttribute('aria-controls')!)!).getByText('Kapatıldı')).toBeInTheDocument();
-  });
-
-  it('filters loaded customers by search text', async () => {
-    storeSession('ayse.karaca');
-    const { user } = renderApp('/alerts');
+    const { user, router } = renderApp('/alerts');
     await screen.findByText('Ahmet Yılmaz');
     await user.type(screen.getByRole('searchbox', { name: 'Müşteri no veya ad ara' }), 'tekstil');
-    expect(screen.queryByText('Ahmet Yılmaz')).not.toBeInTheDocument();
+    await waitFor(() => expect(router.state.location.search).toBe('?q=tekstil'));
+    await waitFor(() => expect(screen.queryByText('Ahmet Yılmaz')).not.toBeInTheDocument());
     expect(screen.getByText('Kaya Tekstil Ltd. Şti.')).toBeInTheDocument();
-    await user.clear(screen.getByRole('searchbox'));
-    await user.type(screen.getByRole('searchbox'), 'zzz');
-    expect(screen.getByText('“zzz” ile eşleşen müşteri yok.')).toBeInTheDocument();
+    expect(queueRequests.some((params) => params.get('q') === 'tekstil')).toBe(true);
   });
 
-  it('pages beyond 200 alerts and warns that groups are partial', async () => {
-    const many = Array.from({ length: 250 }, (_, index) =>
-      makeAlert({ customer_no: `C-${index % 40}`, customer_name: `Müşteri ${index % 40}` }),
+  it('pages through customers with offsets', async () => {
+    const many = Array.from({ length: 120 }, (_, index) =>
+      makeAlert({ customer_no: `C-${String(index).padStart(3, '0')}`, customer_name: `Müşteri ${index}` }),
     );
-    server.use(alertsHandler(many));
+    server.use(...alertsHandler(many));
     storeSession('ayse.karaca');
     const { user } = renderApp('/alerts');
-    expect(await screen.findByText('40 müşteri · 200 / 250 alarm yüklendi')).toBeInTheDocument();
-    expect(screen.getByText(/Gruplar yalnızca yüklenen alarmlara göre/)).toBeInTheDocument();
-    expect(screen.getByText('en az 40 müşteri', { selector: 'p' })).toBeInTheDocument();
+    expect(await screen.findByText('120 müşteri · 120 alarm')).toBeInTheDocument();
+    expect(screen.getByText('Sayfa 1 / 3')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Sonraki/ }));
+    expect(await screen.findByText('Sayfa 2 / 3')).toBeInTheDocument();
+    expect(queueRequests.some((params) => params.get('offset') === '50')).toBe(true);
+    expect(screen.queryByText(/Gruplar yalnızca yüklenen/)).not.toBeInTheDocument();
+  });
 
-    await user.click(screen.getByRole('button', { name: 'Sonraki 50 alarmı yükle' }));
-    expect(await screen.findByText('40 müşteri · 250 alarm gösteriliyor')).toBeInTheDocument();
-    expect(alertRequests.some((params) => params.get('offset') === '200')).toBe(true);
+  it('defaults compliance officers to escalated cases, longest waiting first', async () => {
+    storeSession('mehmet.ozturk');
+    renderApp('/alerts');
+    expect(await screen.findByText('Deniz Kurt')).toBeInTheDocument();
+    expect(pageRequest().get('status')).toBe('in_review');
+    expect(pageRequest().get('sort')).toBe('waiting');
   });
 
   it('validates a custom date range before requesting', async () => {
     storeSession('ayse.karaca');
     renderApp('/alerts?range=custom&from=2026-10-10&to=2026-10-01');
     expect(await screen.findByText('Başlangıç tarihi bitiş tarihinden sonra olamaz.')).toBeInTheDocument();
-    expect(alertRequests.some((params) => params.get('date_from') === '2026-10-10')).toBe(false);
+    expect(queueRequests.some((params) => params.get('date_from') === '2026-10-10')).toBe(false);
   });
 
   it('shows an empty queue', async () => {
-    server.use(alertsHandler([]));
+    server.use(...alertsHandler([]));
     storeSession('ayse.karaca');
     renderApp('/alerts');
     expect(await screen.findByText('Bekleyen alarm yok')).toBeInTheDocument();
   });
 
-  it('shows the new-alert count in the navigation', async () => {
+  it('shows the open-alert count in the navigation', async () => {
     storeSession('ayse.karaca');
     renderApp('/alerts');
     const link = (await screen.findAllByRole('link', { name: /Alarm inceleme/ }))[0]!;
@@ -136,11 +143,10 @@ describe('Alert queue', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/alerts/5518'));
   });
 
-  it('opens the first (most severe) alert when reviewing a customer', async () => {
+  it('opens the customer’s oldest alert when reviewing', async () => {
     storeSession('ayse.karaca');
     const { user, router } = renderApp('/alerts?severity=high');
     await user.click(await screen.findByRole('button', { name: 'Kaya Tekstil Ltd. Şti. için incelemeye başla' }));
     await waitFor(() => expect(router.state.location.pathname).toBe('/alerts/5540'));
-    expect(queueAlerts.find((alert) => alert.alert_id === 5540)?.severity).toBe('high');
   });
 });

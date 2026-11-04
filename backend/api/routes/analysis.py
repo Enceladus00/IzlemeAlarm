@@ -1,13 +1,19 @@
 import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.api.dependencies import (
     get_analysis_service,
     get_demo_service,
     require_permission,
+)
+from backend.api.responses import (
+    DashboardFunnel,
+    DashboardSummary,
+    RulePerformance,
+    SystemOverview,
 )
 from backend.services.demo_service import DemoService
 from backend.services.analysis_service import AnalysisService
@@ -27,22 +33,57 @@ def health_check(
         raise HTTPException(status_code=503, detail="Database unavailable.") from exc
 
 
-@router.get("/dashboard/summary")
+DASHBOARD_PERIODS = (7, 30, 90)
+
+
+def dashboard_days(days: int = Query(default=30)) -> int:
+    """K3 period selector: 7, 30 or 90 days."""
+    if days not in DASHBOARD_PERIODS:
+        raise HTTPException(status_code=422, detail="days must be 7, 30 or 90.")
+    return days
+
+
+@router.get("/dashboard/summary", response_model=DashboardSummary)
 def dashboard_summary(
+    days: int = Depends(dashboard_days),
     _user: AuthenticatedUser = Depends(require_permission("dashboard:view")),
     service: AnalysisService = Depends(get_analysis_service),
-) -> dict[str, Any]:
+) -> Any:
     try:
-        return service.dashboard_summary()
+        return service.dashboard_summary(days)
     except SQLAlchemyError as exc:
         raise HTTPException(status_code=503, detail="Could not load dashboard.") from exc
 
 
-@router.get("/admin/system-overview")
+@router.get("/dashboard/funnel", response_model=DashboardFunnel)
+def dashboard_funnel(
+    days: int = Depends(dashboard_days),
+    _user: AuthenticatedUser = Depends(require_permission("dashboard:view")),
+    service: AnalysisService = Depends(get_analysis_service),
+) -> Any:
+    try:
+        return service.funnel(days)
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="Could not load dashboard.") from exc
+
+
+@router.get("/dashboard/rule-performance", response_model=list[RulePerformance])
+def dashboard_rule_performance(
+    days: int = Depends(dashboard_days),
+    _user: AuthenticatedUser = Depends(require_permission("dashboard:view")),
+    service: AnalysisService = Depends(get_analysis_service),
+) -> Any:
+    try:
+        return service.rule_performance(days)
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="Could not load dashboard.") from exc
+
+
+@router.get("/admin/system-overview", response_model=SystemOverview)
 def system_overview(
     _user: AuthenticatedUser = Depends(require_permission("user:manage")),
     service: AnalysisService = Depends(get_analysis_service),
-) -> dict[str, Any]:
+) -> Any:
     try:
         return service.system_overview()
     except SQLAlchemyError as exc:

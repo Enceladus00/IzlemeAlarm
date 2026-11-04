@@ -6,7 +6,8 @@ from backend.detection.parameters import RuleParameterValues
 from backend.models import Customer, Transaction
 
 
-AlertMode = Literal["ALERT", "SIGNAL_ONLY"]
+# SEVERITY_RAISE: R17 opens no alert; it raises the severity of open alerts.
+AlertMode = Literal["ALERT", "SIGNAL_ONLY", "SEVERITY_RAISE"]
 RuleFeasibility = Literal["HIGH", "MEDIUM", "LOW"]
 
 
@@ -31,6 +32,9 @@ class RuleDefinition:
     analyst_review_notes: tuple[str, ...] = ()
     feasibility: RuleFeasibility = "HIGH"
     feasibility_reason: str = ""
+    # Evaluation order: 0 = transaction rules, 1 = combines the run's scores (R18),
+    # 2 = works on persisted alerts after the run is saved (R17).
+    stage: int = 0
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,8 @@ class RuleResultEvidence:
     step_trace: list[dict[str, Any]]
     transactions: list[Transaction]
     alert_mode: AlertMode
+    # Score needed to open an alert; None means the common 0.5 (R18 sets its own).
+    alert_threshold: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -81,4 +87,16 @@ class RuleStrategy:
         as_of: Any,
         context: DetectionContext | None = None,
     ) -> list[RawRuleResult]:
+        raise NotImplementedError
+
+    def evaluate_combined(
+        self,
+        customers: list[Customer],
+        parameter_sets: dict[str, dict[str, Any]],
+        prior_results: list["RuleResultEvidence"],
+        weights: dict[str, Decimal],
+        *,
+        as_of: Any,
+    ) -> list[RawRuleResult]:
+        """Stage-1 rules: build a result from the same run's other results."""
         raise NotImplementedError

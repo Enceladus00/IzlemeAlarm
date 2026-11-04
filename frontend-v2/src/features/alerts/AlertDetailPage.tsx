@@ -1,23 +1,28 @@
-import { ArrowLeft, ExternalLink, History, SearchX } from 'lucide-react';
-import { useState } from 'react';
+import { ArrowLeft, History, SearchX } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Link, useLocation, useParams } from 'react-router';
-import type { AlertDetail, AlertHistoryEvent } from '@/api/schemas/alerts';
-import { useAuth } from '@/auth/auth-context';
+import type {
+  AlertDetail,
+  AlertHistoryEvent,
+  AlertSystemEvent,
+  FullAlertTransaction,
+  MaskedTransaction,
+} from '@/api/schemas/alerts';
+import type { Transaction } from '@/api/schemas/transactions';
 import { TransactionTable } from '@/components/TransactionTable';
 import { AlertStatusBadge, SeverityBadge } from '@/components/ui/Badge';
-import { Button } from '@/components/ui/Button';
 import { Card, CardHeader } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
-import { InlineAlert } from '@/components/ui/InlineAlert';
 import { PageHeader } from '@/components/ui/PageHeader';
-import { Placeholder } from '@/components/ui/Placeholder';
 import { PageSpinner } from '@/components/ui/Spinner';
 import { ApiError } from '@/api/client';
 import { cn } from '@/utils/cn';
 import { formatDateTime, formatNumber } from '@/utils/format';
-import { useAlertCustomerHistory, useAlertDetail, useCustomerAlerts } from './api';
+import { useAlertDetail, useCustomerAlerts } from './api';
+import { CustomerContextCard } from './CustomerContextCard';
+import { ExplanationPanel } from './ExplanationPanel';
+import { MaskedTransactionTable } from './MaskedTransactionTable';
 import { StatusUpdateForm } from './StatusUpdateForm';
 
 const KNOWN_STATUSES = ['new', 'in_review', 'closed', 'confirmed_suspicious'];
@@ -29,7 +34,6 @@ export default function AlertDetailPage() {
   const alertId = Number(rawId);
   const location = useLocation();
   const backSearch = (location.state as { backSearch?: string } | null)?.backSearch ?? '';
-  const { can } = useAuth();
   const detail = useAlertDetail(alertId);
   const siblings = useCustomerAlerts(detail.data?.customer_no);
 
@@ -80,7 +84,17 @@ export default function AlertDetailPage() {
             <dl className="grid grid-cols-2 gap-x-6 gap-y-4 p-5 text-[13px] sm:grid-cols-3 lg:grid-cols-5">
               <SummaryItem label={t('alertDetail.customer')}>
                 <span className="font-semibold">{alert.customer_name}</span>
-                <span className="block font-mono text-xs text-muted">{alert.customer_no}</span>
+                <span className="block font-mono text-xs text-muted">
+                  {alert.customer_no}
+                  {alert.customer.customer_type && (
+                    <span className="font-sans">
+                      {' · '}
+                      {t(`customerType.${alert.customer.customer_type as 'BIREYSEL'}`, {
+                        defaultValue: alert.customer.customer_type,
+                      })}
+                    </span>
+                  )}
+                </span>
               </SummaryItem>
               <SummaryItem label={t('alertDetail.rule')}>
                 <span className="font-mono font-semibold">{alert.rule_code}</span>
@@ -100,36 +114,30 @@ export default function AlertDetailPage() {
             </dl>
           </Card>
 
+          <ExplanationPanel explanation={alert.explanation} />
+
           <Card>
             <CardHeader title={t('alertDetail.linkedTransactions')} />
             <div className="px-2 pt-3 pb-3">
-              <TransactionTable
-                transactions={alert.transactions}
-                label={t('alertDetail.linkedTransactions')}
-                focusCustomerNo={alert.customer_no}
-              />
+              <LinkedTransactions alert={alert} />
             </div>
           </Card>
 
-          <CustomerHistoryCard alert={alert} />
+          <CustomerContextCard alert={alert} />
         </div>
 
         <div className="space-y-4">
           <Card>
             <CardHeader title={t('alertDetail.updateTitle')} />
             <div className="p-5">
-              {can('alert:update') ? (
-                <StatusUpdateForm alertId={alert.alert_id} currentStatus={alert.status} />
-              ) : (
-                <InlineAlert tone="info">{t('alertDetail.readOnly')}</InlineAlert>
-              )}
+              <StatusUpdateForm alert={alert} backSearch={backSearch} />
             </div>
           </Card>
 
           <Card>
             <CardHeader title={t('alertDetail.history')} />
             <div className="p-5">
-              <HistoryTimeline events={alert.history} />
+              <HistoryTimeline events={alert.history} systemEvents={alert.events} />
             </div>
           </Card>
 
@@ -188,33 +196,71 @@ function SummaryItem({ label, children }: { label: string; children: React.React
   );
 }
 
-function statusLabel(t: ReturnType<typeof useTranslation>['t'], status: string | null): string {
+type StatusKey = 'alertStatus.new' | 'alertStatus.in_review' | 'alertStatus.closed' | 'alertStatus.confirmed_suspicious';
+
+function statusLabel(translate: (key: StatusKey) => string, status: string | null): string {
   if (!status) return '—';
-  return KNOWN_STATUSES.includes(status) ? t(`alertStatus.${status as 'new'}`) : status;
+  return KNOWN_STATUSES.includes(status) ? translate(`alertStatus.${status}` as StatusKey) : status;
 }
 
-function HistoryTimeline({ events }: { events: AlertHistoryEvent[] }) {
+type TimelineEntry =
+  | { kind: 'status'; at: string; event: AlertHistoryEvent }
+  | { kind: 'system'; at: string; event: AlertSystemEvent };
+
+function HistoryTimeline({ events, systemEvents }: { events: AlertHistoryEvent[]; systemEvents: AlertSystemEvent[] }) {
   const { t, i18n } = useTranslation();
   const language = i18n.resolvedLanguage ?? 'tr';
-  if (events.length === 0) {
+  const entries: TimelineEntry[] = [
+    ...events.map((event): TimelineEntry => ({ kind: 'status', at: event.changed_at, event })),
+    ...systemEvents.map((event): TimelineEntry => ({ kind: 'system', at: event.created_at, event })),
+  ];
+  if (entries.length === 0) {
     return <EmptyState icon={History} title={t('alertDetail.historyEmpty')} className="py-6" />;
   }
-  const ordered = [...events].sort((a, b) => b.changed_at.localeCompare(a.changed_at));
+  const ordered = entries.sort((a, b) => b.at.localeCompare(a.at));
   return (
     <ol className="relative space-y-4 border-l border-border pl-5">
-      {ordered.map((event, index) => {
+      {ordered.map((entry, index) => {
+        if (entry.kind === 'system') {
+          const details = entry.event.details;
+          const severity = (value: unknown) =>
+            t(`severity.${String(value) as 'low'}`, { defaultValue: String(value) });
+          const title =
+            entry.event.action === 'alert.severity_raised'
+              ? t('alertDetail.severityRaised', {
+                  from: severity(details.old),
+                  to: severity(details.new),
+                  count: Number(details.K ?? 0),
+                })
+              : t('alertDetail.rescored', {
+                  from: formatNumber(String(details.old_score ?? '0'), language, { maximumFractionDigits: 4 }),
+                  to: formatNumber(String(details.new_score ?? '0'), language, { maximumFractionDigits: 4 }),
+                });
+          return (
+            <li key={`system-${entry.at}-${index}`} className="relative">
+              <span className="absolute top-1.5 -left-[25px] size-2.5 rounded-full border-2 border-surface bg-series-2" aria-hidden />
+              <p className="text-[13px] font-semibold">{title}</p>
+              <p className="text-xs text-muted">
+                {formatDateTime(entry.at, language)} · {t('alertDetail.system')}
+              </p>
+            </li>
+          );
+        }
+        const event = entry.event;
         const title =
           event.old_status === null
-            ? t('alertDetail.historyCreated', { status: statusLabel(t, event.new_status) })
-            : event.old_status === event.new_status
-              ? t('alertDetail.historyNoteOnly')
-              : t('alertDetail.historyChange', { from: statusLabel(t, event.old_status), to: statusLabel(t, event.new_status) });
+            ? t('alertDetail.historyCreated', { status: statusLabel((key) => t(key), event.new_status) })
+            : t('alertDetail.historyChange', { from: statusLabel((key) => t(key), event.old_status), to: statusLabel((key) => t(key), event.new_status) });
+        const role = event.actor_role
+          ? t(`roles.${event.actor_role as 'analyst'}`, { defaultValue: event.actor_role })
+          : null;
         return (
           <li key={`${event.changed_at}-${index}`} className="relative">
             <span className="absolute top-1.5 -left-[25px] size-2.5 rounded-full border-2 border-surface bg-series-1" aria-hidden />
             <p className="text-[13px] font-semibold">{title}</p>
             <p className="text-xs text-muted">
-              {formatDateTime(event.changed_at, language)} · {t('alertDetail.historyActor')}: <Placeholder className="py-0 text-[11px]" />
+              {formatDateTime(event.changed_at, language)} · {t('alertDetail.historyActor')}: {event.actor_name ?? '—'}
+              {role && ` (${role})`}
             </p>
             {event.note && <p className="mt-1.5 rounded-md bg-surface-muted px-3 py-2 text-[13px] whitespace-pre-wrap">{event.note}</p>}
           </li>
@@ -224,48 +270,30 @@ function HistoryTimeline({ events }: { events: AlertHistoryEvent[] }) {
   );
 }
 
-function CustomerHistoryCard({ alert }: { alert: AlertDetail }) {
+/** Masked rows for analysts (K13); full rows only for customer:view. */
+function LinkedTransactions({ alert }: { alert: AlertDetail }) {
   const { t } = useTranslation();
-  const { can } = useAuth();
-  const [requested, setRequested] = useState(false);
-  const history = useAlertCustomerHistory(alert.alert_id, requested);
-
-  return (
-    <Card>
-      <CardHeader
-        title={t('alertDetail.customerHistory')}
-        description={t('alertDetail.customerHistoryHint')}
-        actions={
-          can('customer:view') && (
-            <Link
-              to={`/transactions?customer=${encodeURIComponent(alert.customer_no)}`}
-              className="inline-flex items-center gap-1 text-[13px] font-semibold text-info hover:underline"
-            >
-              {t('alertDetail.openInAnalysis')}
-              <ExternalLink className="size-3.5" aria-hidden />
-            </Link>
-          )
-        }
-      />
-      <div className="px-2 pt-3 pb-3">
-        {!requested ? (
-          <div className="px-3 pb-2">
-            <Button onClick={() => setRequested(true)}>{t('alertDetail.loadCustomerHistory')}</Button>
-          </div>
-        ) : history.isError ? (
-          <div className="px-3">
-            <ErrorState error={history.error} onRetry={() => void history.refetch()} />
-          </div>
-        ) : !history.data ? (
-          <div className="mx-3 h-32 animate-pulse rounded bg-neutral-soft" aria-hidden />
-        ) : (
-          <TransactionTable
-            transactions={history.data.items}
-            label={t('alertDetail.customerHistory')}
-            focusCustomerNo={alert.customer_no}
-          />
-        )}
-      </div>
-    </Card>
-  );
+  const masked = alert.transactions.filter((tx): tx is MaskedTransaction => tx.view === 'masked');
+  const full = alert.transactions.filter((tx): tx is FullAlertTransaction => tx.view === 'full');
+  if (full.length > 0) {
+    const rows: Transaction[] = full.map((tx) => ({
+      transaction_id: tx.transaction_id,
+      transaction_no: tx.transaction_no,
+      amount: tx.amount,
+      currency: tx.currency,
+      tx_time: tx.tx_time,
+      country_code: tx.country_code,
+      channel: tx.channel,
+      sender_account_no: tx.sender_account_no,
+      sender_customer_no: tx.sender_customer_no,
+      sender_customer_name: tx.sender_customer_name,
+      receiver_account_no: tx.receiver_account_no,
+      receiver_customer_no: tx.receiver_customer_no,
+      receiver_customer_name: tx.receiver_customer_name,
+    }));
+    return (
+      <TransactionTable transactions={rows} label={t('alertDetail.linkedTransactions')} focusCustomerNo={alert.customer_no} />
+    );
+  }
+  return <MaskedTransactionTable transactions={masked} label={t('alertDetail.linkedTransactions')} />;
 }

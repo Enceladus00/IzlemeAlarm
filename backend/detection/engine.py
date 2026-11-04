@@ -69,7 +69,12 @@ class DetectionEngine:
         }
         rule_summaries: dict[str, dict[str, object]] = {}
 
-        for rule_code in sorted(active_rules):
+        # Stage 0 (transaction rules) first, then R18 (combines this run's scores),
+        # then R17 (applied to persisted alerts by the repository).
+        weights = {code: rule.weight for code, rule in rules_by_code.items()}
+        for rule_code in sorted(
+            active_rules, key=lambda code: (registry[code].definition.stage, code)
+        ):
             rule_started = perf_counter()
             rule = active_rules[rule_code]
             strategy = registry[rule_code]
@@ -180,7 +185,44 @@ class DetectionEngine:
                     assert isinstance(provisional_types, list)
                     provisional_types.append(customer_type)
 
-                if rule_code == "R15":
+                if definition.stage == 2:
+                    # Post-persist rule (R17): the repository computes it after the
+                    # run's alerts are saved and fills in the trace.
+                    results.extend(
+                        RuleResultEvidence(
+                            rule_code=rule_code,
+                            customer_id=customer.customer_id,
+                            customer_type=customer_type,
+                            parameter_snapshot=parameter_set,
+                            parameter_status=status,
+                            result_status="evaluated",
+                            raw_x=None,
+                            score=None,
+                            step_trace=[
+                                {
+                                    "step": index,
+                                    "text": text,
+                                    "status": "pending_persist",
+                                    "details": {},
+                                }
+                                for index, text in enumerate(definition.steps, 1)
+                            ],
+                            transactions=[],
+                            alert_mode=definition.alert_mode,
+                        )
+                        for customer in type_customers
+                    )
+                    rule_summary["evaluated"] = int(rule_summary["evaluated"]) + len(type_customers)
+                    continue
+                if definition.stage == 1:
+                    raw_results = strategy.evaluate_combined(
+                        type_customers,
+                        {customer_type: parameter_set},
+                        results,
+                        weights,
+                        as_of=as_of,
+                    )
+                elif rule_code == "R15":
                     raw_results = strategy.evaluate_raw(
                         type_customers,
                         transactions,
@@ -232,6 +274,12 @@ class DetectionEngine:
                             **trace[-1]["details"],
                             "score": str(score),
                         }
+                    threshold_value = parameter_set["values"].get("alert_threshold")
+                    alert_threshold = (
+                        Decimal(str(threshold_value))
+                        if definition.stage == 1 and threshold_value is not None
+                        else None
+                    )
                     results.append(
                         RuleResultEvidence(
                             rule_code=rule_code,
@@ -245,6 +293,7 @@ class DetectionEngine:
                             step_trace=trace,
                             transactions=raw.transactions,
                             alert_mode=definition.alert_mode,
+                            alert_threshold=alert_threshold,
                         )
                     )
                     rule_summary["evaluated"] = int(rule_summary["evaluated"]) + 1
@@ -254,7 +303,7 @@ class DetectionEngine:
                     )
                     if definition.alert_mode == "SIGNAL_ONLY" and score > 0:
                         rule_summary["signals"] = int(rule_summary["signals"]) + 1
-                    elif score >= Decimal("0.5"):
+                    elif score >= (alert_threshold or Decimal("0.5")):
                         rule_summary["alerts"] = int(rule_summary["alerts"]) + 1
             rule_summary["elapsed_ms"] = round(
                 (perf_counter() - rule_started) * 1000, 3

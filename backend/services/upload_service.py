@@ -220,11 +220,14 @@ async def upload_csv(
         ],
     }
 
-def get_upload(batch_id: int, db: Session) -> dict[str, Any]:
+def get_upload(batch_id: int, db: Session, viewer_id: int | None = None) -> dict[str, Any]:
     batch = SqlAlchemyUploadRepository(db).get_batch(batch_id)
     if batch is None:
         raise HTTPException(status_code=404, detail="Upload batch not found.")
+    # K13: rejected rows hold raw customer data; only the uploader gets them back.
+    own = viewer_id is not None and batch.uploaded_by == viewer_id
     return {
+        "own_upload": own,
         "batch_id": batch.batch_id,
         "entity_type": batch.entity_type,
         "file_name": batch.file_name,
@@ -236,7 +239,7 @@ def get_upload(batch_id: int, db: Session) -> dict[str, Any]:
             {
                 "row_number": error.row_number,
                 "reason": error.reason,
-                "row_data": error.row_data,
+                "row_data": error.row_data if own else None,
             }
             for error in batch.errors
         ],
@@ -263,5 +266,20 @@ class UploadService:
             actor_id,
         )
 
-    def get_batch(self, batch_id: int) -> dict[str, Any]:
-        return get_upload(batch_id, self._session)
+    def get_batch(self, batch_id: int, viewer_id: int | None = None) -> dict[str, Any]:
+        return get_upload(batch_id, self._session, viewer_id)
+
+    def list_batches(self, entity: str | None, limit: int) -> list[dict[str, Any]]:
+        return [
+            {
+                "batch_id": batch.batch_id,
+                "entity_type": batch.entity_type,
+                "file_name": batch.file_name,
+                "total_rows": batch.total_rows,
+                "accepted_rows": batch.accepted_rows,
+                "rejected_rows": batch.rejected_rows,
+                "uploaded_at": batch.uploaded_at,
+                "uploaded_by_name": username,
+            }
+            for batch, username in SqlAlchemyUploadRepository(self._session).list_batches(entity, limit)
+        ]

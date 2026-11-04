@@ -1,55 +1,39 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiRequest, type QueryValue } from '@/api/client';
 import {
   alertDetailSchema,
   alertPageSchema,
-  alertStatusResultSchema,
+  alertQueueSchema,
   compareRuleCodes,
+  customerContextSchema,
+  decisionResultSchema,
   ruleCodesSchema,
   type AlertStatus,
 } from '@/api/schemas/alerts';
-import { customerHistorySchema } from '@/api/schemas/transactions';
+import { mySummarySchema } from '@/api/schemas/dashboard';
 
-/** The API caps GET /alerts at 200 per request. */
-export const QUEUE_PAGE_SIZE = 200;
+/** Customers per queue page (the API allows up to 200). */
+export const QUEUE_PAGE_SIZE = 50;
+/** GET /alerts caps one request at 200 alerts. */
+const ALERT_LIST_LIMIT = 200;
 
 type AlertQuery = Record<string, QueryValue>;
 
 export const alertKeys = {
   all: ['alerts'] as const,
   queue: (query: AlertQuery) => ['alerts', 'queue', query] as const,
-  count: (query: AlertQuery) => ['alerts', 'count', query] as const,
   ruleCodes: ['alerts', 'rule-codes'] as const,
   detail: (id: number) => ['alerts', 'detail', id] as const,
-  customer: (customerNo: string) => ['alerts', 'customer', customerNo] as const,
-  customerHistory: (id: number) => ['alerts', 'customer-history', id] as const,
+  customer: (customerNo: string, status?: string) => ['alerts', 'customer', customerNo, status ?? 'all'] as const,
+  customerContext: (id: number) => ['alerts', 'customer-context', id] as const,
 };
 
-/** GET /alerts in pages of 200; `fetchNextPage` appends the next offset. */
+/** GET /alerts/queue: customers grouped, sorted, searched and paged on the server (K1). */
 export function useAlertQueue(query: AlertQuery, enabled = true) {
-  return useInfiniteQuery({
-    queryKey: alertKeys.queue(query),
-    initialPageParam: 0,
-    queryFn: ({ pageParam, signal }) =>
-      apiRequest('/alerts', {
-        query: { ...query, offset: pageParam, limit: QUEUE_PAGE_SIZE },
-        schema: alertPageSchema,
-        signal,
-      }),
-    getNextPageParam: (last, pages) => {
-      const loaded = pages.reduce((sum, page) => sum + page.items.length, 0);
-      return loaded < last.total && last.items.length > 0 ? loaded : undefined;
-    },
-    enabled,
-  });
-}
-
-/** Total number of alerts matching a filter (one-row request). */
-export function useAlertCount(query: AlertQuery, enabled = true) {
   return useQuery({
-    queryKey: alertKeys.count(query),
-    queryFn: ({ signal }) =>
-      apiRequest('/alerts', { query: { ...query, limit: 1 }, schema: alertPageSchema, signal }).then((page) => page.total),
+    queryKey: alertKeys.queue(query),
+    queryFn: ({ signal }) => apiRequest('/alerts/queue', { query, schema: alertQueueSchema, signal }),
+    placeholderData: keepPreviousData,
     enabled,
   });
 }
@@ -71,42 +55,66 @@ export function useAlertDetail(alertId: number) {
   });
 }
 
-/** Every alert raised for one customer, any status (newest first). */
-export function useCustomerAlerts(customerNo: string | undefined) {
+/** One customer's alerts (newest first), optionally only one status. */
+export function useCustomerAlerts(customerNo: string | undefined, status?: AlertStatus, enabled = true) {
   return useQuery({
-    queryKey: alertKeys.customer(customerNo ?? ''),
+    queryKey: alertKeys.customer(customerNo ?? '', status),
     queryFn: ({ signal }) =>
       apiRequest('/alerts', {
-        query: { customer_no: customerNo, limit: QUEUE_PAGE_SIZE },
+        query: { customer_no: customerNo, status, limit: ALERT_LIST_LIMIT },
         schema: alertPageSchema,
         signal,
       }),
-    enabled: !!customerNo,
+    enabled: !!customerNo && enabled,
   });
 }
 
-/** Alert-scoped customer history (allowed with alert:view alone). */
-export function useAlertCustomerHistory(alertId: number, enabled: boolean) {
+/**
+ * Masked customer profile and last-6-month activity (K4). Each successful call is
+ * written to the audit log as a customer view (K6), so it is loaded only on request
+ * and not refetched on window focus.
+ */
+export function useCustomerContext(alertId: number, enabled: boolean) {
   return useQuery({
-    queryKey: alertKeys.customerHistory(alertId),
+    queryKey: alertKeys.customerContext(alertId),
     queryFn: ({ signal }) =>
-      apiRequest(`/alerts/${alertId}/customer-transactions`, {
-        query: { limit: 200 },
-        schema: customerHistorySchema,
-        signal,
-      }),
+      apiRequest(`/alerts/${alertId}/customer-context`, { schema: customerContextSchema, signal }),
     enabled,
+    refetchOnWindowFocus: false,
+    staleTime: 5 * 60_000,
   });
 }
 
-export function useUpdateAlertStatus(alertId: number) {
+/** POST /alerts/decisions: one atomic decision for one customer's alerts (K2). */
+export function useAlertDecision() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: { status: AlertStatus; note: string | null }) =>
-      apiRequest(`/alerts/${alertId}/status`, { method: 'PATCH', json: body, schema: alertStatusResultSchema }),
+    mutationFn: (body: { alert_ids: number[]; status: AlertStatus; note: string }) =>
+      apiRequest('/alerts/decisions', { method: 'POST', json: body, schema: decisionResultSchema }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: alertKeys.all });
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
     },
+  });
+}
+
+/** Number of open alerts in one queue status (summary of a one-row queue page). */
+export function useAlertCount(status: 'new' | 'in_review', enabled = true) {
+  return useQuery({
+    queryKey: alertKeys.queue({ status, limit: 1, count: true }),
+    queryFn: ({ signal }) =>
+      apiRequest('/alerts/queue', { query: { status, limit: 1 }, schema: alertQueueSchema, signal }).then(
+        (page) => page.summary.alerts,
+      ),
+    enabled,
+  });
+}
+
+/** GET /dashboard/my-summary: the signed-in user's own work only. */
+export function useMySummary() {
+  return useQuery({
+    queryKey: ['dashboard', 'my-summary'],
+    queryFn: ({ signal }) => apiRequest('/dashboard/my-summary', { schema: mySummarySchema, signal }),
+    staleTime: 60_000,
   });
 }

@@ -13,6 +13,8 @@ export function useFieldErrorText() {
         return t('rules.errors.min', { min: formatNumber(error.min, language, { maximumFractionDigits: 6 }) });
       case 'max':
         return t('rules.errors.max', { max: formatNumber(error.max, language, { maximumFractionDigits: 6 }) });
+      case 'reasonTooLong':
+        return t('rules.errors.reasonTooLong', { max: error.max });
       case 'limitCurrencyMissing':
       case 'limitCurrencyInvalid':
         return t(`rules.errors.${error.key}`, { row: error.row });

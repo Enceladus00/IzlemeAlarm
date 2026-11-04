@@ -45,7 +45,9 @@ class ApplicationTests(unittest.TestCase):
             "/alerts/{alert_id}",
             "/alerts/{alert_id}/status",
             "/transactions",
-            "/customers/{customer_no}/transactions",
+            "/alerts/queue",
+            "/alerts/decisions",
+            "/alerts/{alert_id}/customer-context",
             "/rules",
             "/rules/{rule_code}",
             "/rules/evaluate",
@@ -89,30 +91,36 @@ class ApplicationTests(unittest.TestCase):
         self.assertIn("ACC-42", sql)
         self.assertIn("receiver_account_id IN", sql)
 
-    def test_analyst_note_is_saved_without_changing_alert_status(self) -> None:
-        alert = SimpleNamespace(alert_id=12, status="in_review")
-        records: list[object] = []
-        session = SimpleNamespace(
-            get=lambda _model, _alert_id: alert,
-            add=records.append,
-            commit=lambda: None,
-        )
+    def test_note_only_update_is_no_longer_a_valid_transition(self) -> None:
+        from backend.services.alert_workflow import WorkflowError
+        from backend.services.auth_service import AuthenticatedUser
 
-        result = AlertService(SqlAlchemyAlertRepository(session)).update_status(
-            12,
-            "in_review",
-            "Reviewed account activity.",
-            actor_id=7,
-        )
+        alert = SimpleNamespace(alert_id=12, status="new", customer_id=1)
+        released: list[bool] = []
 
-        history = next(record for record in records if isinstance(record, AlertStatusHistory))
-        audit = next(record for record in records if isinstance(record, AuditLog))
-        self.assertEqual(result, {"alert_id": 12, "status": "in_review", "changed": False})
-        self.assertEqual(history.old_status, "in_review")
-        self.assertEqual(history.new_status, "in_review")
-        self.assertEqual(history.changed_by, 7)
-        self.assertEqual(history.note, "Reviewed account activity.")
-        self.assertEqual(audit.action, "alert.note_added")
+        class Repository:
+            def lock_alerts(self, _ids):
+                return [alert]
+
+            def last_escalators(self, _ids):
+                return {}
+
+            def release(self):
+                released.append(True)
+
+            def apply_decision(self, *_args):  # pragma: no cover - must not run
+                raise AssertionError("nothing may be written")
+
+        user = AuthenticatedUser(
+            user_id=7,
+            username="uyum",
+            role_code="compliance",
+            permissions=frozenset({"alert:view", "alert:confirm"}),
+        )
+        with self.assertRaises(WorkflowError) as raised:
+            AlertService(Repository()).update_status(12, "new", "Not", user)
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertEqual(released, [True])
 
     def test_entity_relationships_configure(self) -> None:
         configure_mappers()
@@ -414,7 +422,7 @@ class ApplicationTests(unittest.TestCase):
                     is_active=False,
                 )
 
-            def save_rule(self, rule, thresholds, is_active, weight, actor_id):
+            def save_rule(self, rule, thresholds, is_active, weight, actor_id, reason=""):
                 self.saved = (thresholds, is_active)
 
         repository = FakeRuleRepository()

@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from datetime import date, datetime, time, timedelta
 from time import perf_counter
 from typing import Any
@@ -6,6 +7,20 @@ from typing import Any
 from backend.repositories.analysis_repository import SqlAlchemyAnalysisRepository
 from backend.security import ACCESS_TOKEN_MINUTES
 from backend.services.upload_service import MAX_UPLOAD_BYTES, MAX_UPLOAD_ROWS
+
+
+def schema_head() -> str | None:
+    """The newest Alembic revision known to this code (compared with the database's)."""
+    try:
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        root = Path(__file__).resolve().parents[2]
+        config = Config(str(root / "alembic.ini"))
+        config.set_main_option("script_location", str(root / "alembic"))
+        return ScriptDirectory.from_config(config).get_current_head()
+    except Exception:  # pragma: no cover - missing alembic files must not break the page
+        return None
 
 
 class AnalysisService:
@@ -16,9 +31,9 @@ class AnalysisService:
         self._repository.check_database()
         return {"status": "ok", "database": "connected"}
 
-    def dashboard_summary(self) -> dict[str, Any]:
+    def dashboard_summary(self, days: int = 30) -> dict[str, Any]:
         today = date.today()
-        first_trend_day = today - timedelta(days=29)
+        first_trend_day = today - timedelta(days=days - 1)
         data = self._repository.dashboard_data(
             datetime.combine(first_trend_day, time.min),
             datetime.combine(today + timedelta(days=1), time.min),
@@ -30,6 +45,7 @@ class AnalysisService:
             day: int(count) for day, count in data["suspicious_trends"]
         }
         return {
+            "days": days,
             **{
                 key: int(value or 0)
                 for key, value in data["totals"].items()
@@ -51,10 +67,55 @@ class AnalysisService:
                 }
                 for day in (
                     first_trend_day + timedelta(days=offset)
-                    for offset in range(30)
+                    for offset in range(days)
                 )
             ],
         }
+
+    def funnel(self, days: int) -> dict[str, Any]:
+        since = datetime.combine(date.today() - timedelta(days=days - 1), time.min)
+        row = self._repository.funnel_data(since)
+        result = {key: int(value or 0) for key, value in row.items()}
+        return {
+            "days": days,
+            "created": result["created"],
+            "analyst_closed": result["analyst_closed"],
+            "analyst_open": result["analyst_open"],
+            "escalated": result["escalated"],
+            "escalation_outcome": {
+                "confirmed": result["confirmed"],
+                "closed": result["escalated_closed"],
+                "returned": result["returned"],
+                "pending": result["pending"],
+            },
+        }
+
+    def rule_performance(self, days: int) -> list[dict[str, Any]]:
+        since = datetime.combine(date.today() - timedelta(days=days - 1), time.min)
+        rows = []
+        for row in self._repository.rule_performance_data(since):
+            confirmed = int(row["confirmed"] or 0)
+            closed = int(row["closed"] or 0)
+            decided = confirmed + closed
+            thresholds = row["thresholds"] or {}
+            rows.append(
+                {
+                    "rule_code": row["rule_code"],
+                    "name": row["name"],
+                    "is_active": row["is_active"],
+                    "evaluated": int(row["evaluated"] or 0),
+                    "alerts": int(row["alerts"] or 0),
+                    "avg_alert_score": row["avg_alert_score"],
+                    "confirmed": confirmed,
+                    "closed": closed,
+                    "hit_rate": round(confirmed / decided, 3) if decided else None,
+                    "provisional": any(
+                        isinstance(item, dict) and item.get("status") == "PROVISIONAL"
+                        for item in thresholds.values()
+                    ),
+                }
+            )
+        return rows
 
     def system_overview(self) -> dict[str, Any]:
         now = datetime.now()
@@ -75,6 +136,7 @@ class AnalysisService:
                 "database": "connected",
                 "database_latency_ms": database_latency_ms,
                 "schema_revision": data["schema_revision"],
+                "schema_head": schema_head(),
             },
             "rules": {
                 "active": data["active_rules"],

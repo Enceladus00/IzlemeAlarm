@@ -8,6 +8,8 @@ from backend.repositories.audit_repository import AuditLogRepository
 from backend.repositories.auth_repository import SqlAlchemyAuthRepository
 from backend.repositories.alert_repository import SqlAlchemyAlertRepository
 from backend.repositories.audit_query_repository import SqlAlchemyAuditQueryRepository
+from backend.repositories.customer_repository import SqlAlchemyCustomerRepository
+from backend.services.customer_service import CustomerService
 from backend.repositories.analysis_repository import SqlAlchemyAnalysisRepository
 from backend.repositories.detection_repository import SqlAlchemyDetectionRepository
 from backend.repositories.transaction_repository import SqlAlchemyTransactionRepository
@@ -114,3 +116,7 @@ def get_demo_service(db: Session = Depends(get_db)) -> DemoService:
 def get_upload_service(db: Session = Depends(get_db)) -> UploadService:
     detection_service = DetectionService(SqlAlchemyDetectionRepository(db))
     return UploadService(db, detection_service)
+
+
+def get_customer_service(db: Session = Depends(get_db)) -> CustomerService:
+    return CustomerService(SqlAlchemyCustomerRepository(db))

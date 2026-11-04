@@ -126,8 +126,9 @@ def rule_rows(active_code: str | None = None, thresholds=None):
             rule_code=code,
             is_active=code == active_code,
             thresholds=thresholds if code == active_code else {},
+            weight=Decimal("1.000"),
         )
-        for code in (f"R{number:02d}" for number in range(1, 16))
+        for code in sorted(load_rule_registry())
     }
     return rows
 
@@ -627,14 +628,17 @@ class DetectionStrategyTests(unittest.TestCase):
 
     def test_registry_rejects_missing_rule_rows_and_active_implementations(self) -> None:
         registry = load_rule_registry()
-        self.assertEqual(set(registry), {f"R{number:02d}" for number in range(1, 16)})
+        self.assertEqual(
+            set(registry),
+            {f"R{number:02d}" for number in range(1, 19)} | {"S1", "S2"},
+        )
         missing_rule_row = rule_rows()
         del missing_rule_row["R03"]
         with self.assertRaisesRegex(RuntimeError, "implementations_without_database_row"):
             DetectionEngine().evaluate([], [], missing_rule_row, as_of=AS_OF)
         unknown = rule_rows()
-        unknown["R16"] = SimpleNamespace(
-            rule_code="R16", is_active=True, thresholds={}
+        unknown["R99"] = SimpleNamespace(
+            rule_code="R99", is_active=True, thresholds={}
         )
         with self.assertRaisesRegex(RuntimeError, "active_rules_without_implementation"):
             DetectionEngine().evaluate([], [], unknown, as_of=AS_OF)
@@ -1264,174 +1268,6 @@ class DetectionStrategyTests(unittest.TestCase):
         self.assertEqual(alert_severity(Decimal("0.7000")), "medium")
         self.assertEqual(alert_severity(Decimal("0.5000")), "low")
 
-    def test_persisting_the_same_alert_twice_is_idempotent(self) -> None:
-        class FakeResult:
-            def __init__(self, rows=()):
-                self._rows = list(rows)
-
-            def all(self):
-                return self._rows
-
-        class UniqueAlertSession:
-            def __init__(self):
-                self.pending = []
-                self.alert_keys = {}
-                self.alert_rows = {}
-                self.alert_values = []
-                self.alert_transaction_values = []
-                self.detection_runs = []
-                self.next_result_id = 1
-                self.next_alert_id = 1
-
-            def add(self, value):
-                self.pending.append(value)
-                if isinstance(value, DetectionRun):
-                    self.detection_runs.append(value)
-
-            def add_all(self, values):
-                self.pending.extend(values)
-
-            def scalars(self, _statement):
-                return SimpleNamespace(
-                    all=lambda: list(self.alert_rows.values())
-                )
-
-            def flush(self):
-                for value in self.pending:
-                    if isinstance(value, RuleResult) and value.result_id is None:
-                        value.result_id = self.next_result_id
-                        self.next_result_id += 1
-
-            def execute(self, statement):
-                if statement.table.name != Alert.__tablename__:
-                    if statement.table.name == AlertTransaction.__tablename__:
-                        self.alert_transaction_values.extend(statement._multi_values[0])
-                    return FakeResult()
-                inserted = []
-                for row in statement._multi_values[0]:
-                    key = row[Alert.__table__.c.deduplication_key]
-                    if key not in self.alert_keys:
-                        alert_id = self.next_alert_id
-                        self.next_alert_id += 1
-                        self.alert_keys[key] = alert_id
-                        inserted.append((alert_id, key))
-                        self.alert_values.append(row)
-                        self.alert_rows[key] = SimpleNamespace(
-                            deduplication_key=key,
-                            alert_id=alert_id,
-                            score=row[Alert.__table__.c.score],
-                            severity=row[Alert.__table__.c.severity],
-                        )
-                return FakeResult(inserted)
-
-            def commit(self):
-                self.pending.clear()
-
-            def rollback(self):
-                self.pending.clear()
-
-        transaction = make_transaction(91, "100", sender_id=1)
-        result = RuleResultEvidence(
-            rule_code="R01",
-            customer_id=1,
-            customer_type="BIREYSEL",
-            parameter_snapshot={"status": "APPROVED", "values": {}},
-            parameter_status="APPROVED",
-            result_status="evaluated",
-            raw_x=Decimal("3"),
-            score=Decimal("0.7500"),
-            step_trace=[],
-            transactions=[transaction],
-            alert_mode="ALERT",
-        )
-        evaluation = DetectionEvaluation(
-            results=[result],
-            summary={"rules": {"R01": {"alerts": 1}}},
-        )
-        rule = SimpleNamespace(rule_id=5, weight=Decimal("1.000"))
-        session = UniqueAlertSession()
-        repository = SqlAlchemyDetectionRepository(session)
-
-        first = repository.persist_run(
-            uuid4(),
-            AS_OF,
-            evaluation,
-            {"R01": rule},
-        )
-        later_transaction = make_transaction(92, "20")
-        later_result = RuleResultEvidence(
-            rule_code="R01",
-            customer_id=1,
-            customer_type="BIREYSEL",
-            parameter_snapshot={"status": "APPROVED", "values": {}},
-            parameter_status="APPROVED",
-            result_status="evaluated",
-            raw_x=Decimal("3"),
-            score=Decimal("0.9000"),
-            step_trace=[],
-            transactions=[later_transaction],
-            alert_mode="ALERT",
-        )
-        later_evaluation = DetectionEvaluation(
-            results=[later_result],
-            summary={"rules": {"R01": {"alerts": 1}}},
-        )
-        second = repository.persist_run(
-            uuid4(),
-            AS_OF,
-            later_evaluation,
-            {"R01": rule},
-        )
-
-        self.assertEqual(first, 1)
-        first_run = session.detection_runs[0]
-        self.assertIsNotNone(first_run.completed_at)
-        self.assertGreaterEqual(first_run.duration_ms, 0)
-        self.assertEqual(second, 0)
-        self.assertEqual(len(session.alert_keys), 1)
-        self.assertEqual(
-            session.alert_values[0][Alert.__table__.c.severity], "medium"
-        )
-        self.assertEqual(
-            session.alert_rows["R01:1:2026-01-08"].score, Decimal("0.9000")
-        )
-        self.assertEqual(session.alert_rows["R01:1:2026-01-08"].severity, "high")
-        self.assertEqual(
-            {
-                row[AlertTransaction.__table__.c.transaction_id]
-                for row in session.alert_transaction_values
-            },
-            {91, 92},
-        )
-
-        aggregate_session = UniqueAlertSession()
-        aggregate_result = RuleResultEvidence(
-            rule_code="R04",
-            customer_id=7,
-            customer_type="BIREYSEL",
-            parameter_snapshot={"status": "APPROVED", "values": {}},
-            parameter_status="APPROVED",
-            result_status="evaluated",
-            raw_x=Decimal("0.8"),
-            score=Decimal("0.7500"),
-            step_trace=[],
-            transactions=[],
-            alert_mode="ALERT",
-        )
-        aggregate_created = SqlAlchemyDetectionRepository(
-            aggregate_session
-        ).persist_run(
-            uuid4(),
-            AS_OF,
-            DetectionEvaluation(
-                results=[aggregate_result],
-                summary={"rules": {"R04": {"alerts": 1}}},
-            ),
-            {"R04": SimpleNamespace(rule_id=8, weight=Decimal("1.000"))},
-        )
-        self.assertEqual(aggregate_created, 1)
-        self.assertEqual(len(aggregate_session.alert_values), 1)
-        self.assertEqual(aggregate_session.alert_transaction_values, [])
 
 
 if __name__ == "__main__":

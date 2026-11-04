@@ -4,11 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from backend.api.dependencies import get_user_service, require_permission
+from backend.api.responses import UserView
 from backend.api_schemas import UserCreate, UserUpdate
 from backend.services.auth_service import AuthenticatedUser
 from backend.services.user_service import (
     DuplicateUsername,
     InvalidUserInput,
+    SelfUpdateForbidden,
     UserNotFound,
     UserRoleNotFound,
     UserService,
@@ -59,7 +61,7 @@ def list_roles(
     return service.list_roles()
 
 
-@router.patch("/users/{user_id}")
+@router.patch("/users/{user_id}", response_model=UserView)
 def update_user(
     user_id: int,
     request: UserUpdate,
@@ -73,6 +75,8 @@ def update_user(
             is_active=request.is_active,
             actor_id=actor.user_id,
         )
+    except SelfUpdateForbidden as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except UserNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except UserRoleNotFound as exc:

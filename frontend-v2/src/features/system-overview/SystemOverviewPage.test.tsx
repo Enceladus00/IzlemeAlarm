@@ -1,5 +1,6 @@
 import { screen, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
+import { systemOverviewFixture } from '@/test/fixtures';
 import { renderApp, storeSession } from '@/test/render';
 import { API, server } from '@/test/server';
 
@@ -12,7 +13,7 @@ describe('System overview', () => {
     expect(screen.getByText('Çalışıyor')).toBeInTheDocument();
     expect(screen.getByText(/GET \/health · 200 · \d+ ms/)).toBeInTheDocument();
     expect(screen.getByText('SELECT 1 · 2,1 ms')).toBeInTheDocument();
-    expect(screen.getByText('alembic · 0005_system_overview_metrics')).toBeInTheDocument();
+    expect(screen.getByText('alembic · 0006_alert_workflow')).toBeInTheDocument();
     expect(screen.getByText('18 kural aktif')).toBeInTheDocument();
     expect(screen.getByText('son çalışma 29.10.2026 18:42 · 2,4 sn')).toBeInTheDocument();
 
@@ -29,12 +30,25 @@ describe('System overview', () => {
     expect(screen.getByRole('link', { name: /Denetim kaydını aç/ })).toHaveAttribute('href', '/audit');
   });
 
-  it('labels the schema up-to-date status as a placeholder', async () => {
+  it('shows the schema as up to date when revision matches head', async () => {
     storeSession('admin');
     renderApp('/system');
-    const placeholder = (await screen.findByText('Güncel')).closest('[data-placeholder]');
-    expect(placeholder).not.toBeNull();
-    expect(within(placeholder as HTMLElement).getByText('Yer tutucu')).toBeInTheDocument();
+    expect(await screen.findByText('Güncel')).toBeInTheDocument();
+    expect(screen.queryByText('Yer tutucu')).not.toBeInTheDocument();
+  });
+
+  it('warns when the database schema is behind the server head', async () => {
+    server.use(
+      http.get(`${API}/admin/system-overview`, () => {
+        return HttpResponse.json({
+          ...systemOverviewFixture,
+          health: { ...systemOverviewFixture.health, schema_revision: '0006_alert_workflow', schema_head: '0007_future' },
+        });
+      }),
+    );
+    storeSession('admin');
+    renderApp('/system');
+    expect(await screen.findByText('Güncel değil: 0007_future bekleniyor')).toBeInTheDocument();
   });
 
   it('reports an unreachable API health check', async () => {

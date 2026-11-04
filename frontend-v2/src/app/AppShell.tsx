@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { NavLink, Outlet, useLocation } from 'react-router';
 import { useAuth } from '@/auth/auth-context';
 import { useAlertCount } from '@/features/alerts/api';
+import { isComplianceUser } from '@/features/alerts/workflow';
 import { cn } from '@/utils/cn';
 import { formatNumber } from '@/utils/format';
 import { isReadOnly, NAV_SECTIONS, visibleNavItems } from './navigation';
@@ -36,15 +37,17 @@ function Brand() {
   );
 }
 
-/** Count of new (unreviewed) alerts beside the alert queue link. */
+/** Open alerts waiting for this user's role, beside the alert queue link. */
 function NewAlertsBadge() {
   const { t, i18n } = useTranslation();
-  const count = useAlertCount({ status: 'new' });
+  const { permissions } = useAuth();
+  const status = isComplianceUser(permissions) ? 'in_review' : 'new';
+  const count = useAlertCount(status);
   if (!count.data) return null;
   return (
     <span className="rounded-md bg-accent px-1.5 py-0.5 text-[11px] font-bold text-accent-fg tabular-nums">
       {formatNumber(count.data, i18n.resolvedLanguage ?? 'tr')}
-      <span className="sr-only"> {t('alertStatus.new')}</span>
+      <span className="sr-only"> {t(`alertStatus.${status}`)}</span>
     </span>
   );
 }
@@ -57,6 +60,7 @@ function SidebarContent() {
     admin: t('roles.admin'),
     analyst: t('roles.analyst'),
     auditor: t('roles.auditor'),
+    compliance: t('roles.compliance'),
   };
   const roleLabel = profile ? (roleLabels[profile.role_code] ?? profile.role_code) : undefined;
 

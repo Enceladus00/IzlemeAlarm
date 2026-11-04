@@ -134,18 +134,68 @@ export function buildFlowLayout(
 
   if (accounts.size === 0) return null;
 
-  const visible = [...flows.values()].sort(
+  const focusedAccounts = new Set(
+    [...accounts.values()]
+      .filter((account) => (focusType === 'account' ? account.accountNo === focusId : account.customerNo === focusId))
+      .map((account) => account.accountNo),
+  );
+  return layoutFlows(accounts, [...flows.values()], focusedAccounts);
+}
+
+/** Server routes (K12) for one focus: accounts are masked labels, names are not sent. */
+export interface SummaryRoute {
+  sender_account: string;
+  receiver_account: string;
+  sender_is_focus: boolean;
+  receiver_is_focus: boolean;
+  currency: string;
+  count: number;
+  amount: string;
+  alert_linked: number;
+}
+
+export function buildFlowLayoutFromRoutes(
+  routes: SummaryRoute[],
+  names: { focus: string; counterparty: string },
+): FlowLayout | null {
+  if (routes.length === 0) return null;
+  const accounts = new Map<string, FlowAccount>();
+  const focusedAccounts = new Set<string>();
+  const touch = (accountNo: string, isFocus: boolean, direction: 'incoming' | 'outgoing', count: number) => {
+    let account = accounts.get(accountNo);
+    if (!account) {
+      account = { accountNo, customerNo: '', customerName: isFocus ? names.focus : names.counterparty, incoming: 0, outgoing: 0 };
+      accounts.set(accountNo, account);
+    }
+    account[direction] += count;
+    if (isFocus) focusedAccounts.add(accountNo);
+  };
+  const flows = routes.map((route) => {
+    touch(route.sender_account, route.sender_is_focus, 'outgoing', route.count);
+    touch(route.receiver_account, route.receiver_is_focus, 'incoming', route.count);
+    return {
+      sender: route.sender_account,
+      receiver: route.receiver_account,
+      currency: route.currency,
+      count: route.count,
+      amountCents: toCents(route.amount),
+      flagged: route.alert_linked,
+    };
+  });
+  return layoutFlows(accounts, flows, focusedAccounts);
+}
+
+function layoutFlows(
+  accounts: Map<string, FlowAccount>,
+  flows: Array<{ sender: string; receiver: string; currency: string; count: number; amountCents: bigint; flagged: number }>,
+  focusedAccounts: Set<string>,
+): FlowLayout {
+  const visible = [...flows].sort(
     (a, b) =>
       b.count - a.count ||
       compareText(a.sender, b.sender) ||
       compareText(a.receiver, b.receiver) ||
       compareText(a.currency, b.currency),
-  );
-
-  const focusedAccounts = new Set(
-    [...accounts.values()]
-      .filter((account) => (focusType === 'account' ? account.accountNo === focusId : account.customerNo === focusId))
-      .map((account) => account.accountNo),
   );
 
   // Insertion order matters: Python zips dict keys (first-seen order) with row centers.

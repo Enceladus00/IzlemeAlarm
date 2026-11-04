@@ -3,6 +3,7 @@ import { apiDateTime } from './common';
 
 /** GET /dashboard/summary (backend/services/analysis_service.py::dashboard_summary). */
 export const dashboardSummarySchema = z.object({
+  days: z.number(),
   customers: z.number(),
   accounts: z.number(),
   transactions: z.number(),
@@ -34,6 +35,8 @@ export const systemOverviewSchema = z.object({
     database: z.string(),
     database_latency_ms: z.number(),
     schema_revision: z.string().nullable(),
+    /** Newest migration known to the API code; equal to schema_revision when up to date. */
+    schema_head: z.string().nullable(),
   }),
   rules: z.object({
     active: z.number(),
@@ -62,3 +65,55 @@ export type SystemOverview = z.infer<typeof systemOverviewSchema>;
 
 /** GET /health (public). */
 export const healthSchema = z.object({ status: z.string(), database: z.string() });
+
+/** GET /dashboard/my-summary (backend/api/responses.py::MySummary) */
+export const mySummarySchema = z.object({
+  decided_today: z.number(),
+  escalated_today: z.number(),
+  returned_to_me: z.number(),
+  returned_cases: z.array(
+    z.object({
+      customer_no: z.string(),
+      customer_name: z.string(),
+      rule_codes: z.array(z.string()),
+      alert_ids: z.array(z.number()),
+      returned_by: z.string().nullable(),
+      returned_at: z.string(),
+      note: z.string().nullable(),
+    }),
+  ),
+});
+export type MySummary = z.infer<typeof mySummarySchema>;
+
+/** GET /dashboard/funnel (K3 tab 2). created = analyst_closed + analyst_open + escalated. */
+export const dashboardFunnelSchema = z.object({
+  days: z.number(),
+  created: z.number(),
+  analyst_closed: z.number(),
+  analyst_open: z.number(),
+  escalated: z.number(),
+  escalation_outcome: z.object({
+    confirmed: z.number(),
+    closed: z.number(),
+    returned: z.number(),
+    pending: z.number(),
+  }),
+});
+export type DashboardFunnel = z.infer<typeof dashboardFunnelSchema>;
+
+/** GET /dashboard/rule-performance (K3 tab 3). */
+export const rulePerformanceSchema = z.array(
+  z.object({
+    rule_code: z.string(),
+    name: z.string(),
+    is_active: z.boolean(),
+    evaluated: z.number(),
+    alerts: z.number(),
+    avg_alert_score: z.union([z.string(), z.number()]).transform(String).nullable(),
+    confirmed: z.number(),
+    closed: z.number(),
+    hit_rate: z.number().nullable(),
+    provisional: z.boolean(),
+  }),
+);
+export type RulePerformance = z.infer<typeof rulePerformanceSchema>;
