@@ -96,6 +96,23 @@ def test_queue_shows_who_returned_the_case(client, users, factory):
     assert body["summary"]["returned_customers"] == 1
 
 
+def test_compliance_queue_shows_who_escalated_and_why(client, users, factory):
+    token = _token()
+    customer = factory.customer(f"{token} Yükseltilen")
+    alert = factory.alert(customer, status="in_review")
+    factory.history(alert, users["analyst"]["user_id"], "new", "in_review", note="Profil dışı")
+    factory.commit()
+    item = client.get(
+        "/alerts/queue",
+        params={"q": token, "status": "in_review"},
+        headers=users["compliance"]["headers"],
+    ).json()["items"][0]
+    assert item["escalated_by"] == users["analyst"]["username"]
+    assert item["escalation_note"] == "Profil dışı"
+    assert item["escalated_at"] is not None
+    assert item["returned_by"] is None
+
+
 def test_compliance_waiting_sort(client, users, factory):
     token = _token()
     early = factory.customer(f"{token} Erken")
@@ -276,3 +293,17 @@ def test_k8_legacy_rule_alert_has_no_explanation(client, users, factory):
     factory.commit()
     body = client.get(f"/alerts/{alert.alert_id}", headers=users["analyst"]["headers"]).json()
     assert body["explanation"] is None
+
+
+def test_alert_list_counts_every_status_under_the_same_filters(client, users, factory):
+    token = _token()
+    customer = factory.customer(f"{token} Sayım")
+    for status in ("new", "new", "in_review", "closed", "confirmed_suspicious"):
+        factory.alert(customer, status=status)
+    factory.commit()
+    params = {"customer_no": customer.customer_no, "status": "closed", "include_counts": "true", "limit": 25}
+    body = client.get("/alerts", params=params, headers=users["compliance"]["headers"]).json()
+    assert body["total"] == 1
+    assert body["counts_by_status"] == {"new": 2, "in_review": 1, "closed": 1, "confirmed_suspicious": 1}
+    plain = client.get("/alerts", params={"customer_no": customer.customer_no}, headers=users["compliance"]["headers"]).json()
+    assert "counts_by_status" not in plain

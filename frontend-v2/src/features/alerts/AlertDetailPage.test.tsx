@@ -156,6 +156,15 @@ describe('Alert detail', () => {
     ).toBeInTheDocument();
   });
 
+  it('opens with the analyst’s reason for escalating (E05)', async () => {
+    storeSession('mehmet.ozturk');
+    renderApp('/alerts/5590');
+    const heading = await screen.findByRole('heading', { name: 'Analist neden yükseltti?' });
+    const card = heading.parentElement!;
+    expect(within(card).getByText('ayse.karaca')).toBeInTheDocument();
+    expect(within(card).getByText('Profil dışı')).toBeInTheDocument();
+  });
+
   it('locks final decisions for the user who escalated', async () => {
     server.use(
       http.get(`${API}/alerts/5590`, () =>

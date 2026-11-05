@@ -19,6 +19,7 @@ import { PageSpinner } from '@/components/ui/Spinner';
 import { useUsers } from '@/features/users/api';
 import { cn } from '@/utils/cn';
 import { formatDateTime } from '@/utils/format';
+import { DecisionTrace } from './DecisionTrace';
 
 const PAGE_SIZES = [50, 100, 200] as const;
 /** Event types with a Turkish label (API design 7.17). Keys use '_' for '.'. */
@@ -51,6 +52,13 @@ const ACTION_TONE: Record<string, 'success' | 'danger' | 'info' | 'neutral'> = {
 /** K6: customer views are numerous, so the screen hides them unless asked. */
 const VIEW_ACTION = 'customer.viewed';
 const DEFAULT_DAYS = 30;
+
+/** E06: alert events can show the decision trace when the user may open the alert. */
+function alertTraceId(event: AuditEvent, canViewAlerts: boolean): number | null {
+  if (!canViewAlerts || event.entity_type !== 'alert' || !event.action.startsWith('alert.')) return null;
+  const id = Number(event.entity_id);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
 
 function actionKey(action: string): string {
   return action.replace(/\./g, '_');
@@ -261,10 +269,20 @@ export default function AuditLogPage() {
                 <tbody>
                   {items.map((event) => {
                     const expanded = open.has(event.audit_id);
-                    const hasDetails = event.details !== null && event.details !== undefined && !(typeof event.details === 'object' && Object.keys(event.details).length === 0);
+                    const traceAlertId = alertTraceId(event, can('alert:view'));
+                    const hasDetails =
+                      traceAlertId !== null ||
+                      (event.details !== null && event.details !== undefined && !(typeof event.details === 'object' && Object.keys(event.details).length === 0));
                     return (
                       <Fragment key={event.audit_id}>
-                        <tr className={cn('border-b border-border', expanded && 'border-b-0')}>
+                        <tr
+                          className={cn(
+                            'border-b border-border',
+                            expanded && 'border-b-0',
+                            // E06: unauthorised attempts stand out as a red row.
+                            event.action === 'ACCESS_DENIED' && 'bg-danger-soft',
+                          )}
+                        >
                           <td className="px-5 py-2.5 whitespace-nowrap text-muted">{formatDateTime(event.created_at, language)}</td>
                           <td className="px-3 py-2.5 font-medium">{actorName(event)}</td>
                           <td className="px-3 py-2.5">
@@ -293,9 +311,12 @@ export default function AuditLogPage() {
                         {expanded && (
                           <tr className="border-b border-border">
                             <td colSpan={5} className="px-5 pb-3">
-                              <pre id={`audit-details-${event.audit_id}`} className="overflow-x-auto rounded-md bg-surface-muted p-3 font-mono text-xs">
-                                {JSON.stringify(event.details, null, 2)}
-                              </pre>
+                              <div id={`audit-details-${event.audit_id}`} className="grid gap-4 lg:grid-cols-2">
+                                <pre className="overflow-x-auto rounded-md bg-surface-muted p-3 font-mono text-xs">
+                                  {JSON.stringify(event.details, null, 2)}
+                                </pre>
+                                {traceAlertId !== null && <DecisionTrace alertId={traceAlertId} />}
+                              </div>
                             </td>
                           </tr>
                         )}

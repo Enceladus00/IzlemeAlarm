@@ -7,6 +7,7 @@ from unittest.mock import patch
 from sqlalchemy.orm import configure_mappers
 
 from backend.db_url import normalize_database_url
+from backend.demo import DEMO_CUSTOMER_COUNT, DEMO_SCENARIOS
 from backend.detection.evaluation import DetectionEvaluation
 from backend.detection.registry import load_rule_registry
 from backend.main import app
@@ -550,7 +551,7 @@ class ApplicationTests(unittest.TestCase):
         self.assertEqual(detection.kwargs["suspicious_customer_ids"], {22})
         self.assertEqual(
             set(detection.kwargs["rule_overrides"]),
-            {f"R{number:02d}" for number in range(1, 16)},
+            set(load_rule_registry()),
         )
         self.assertTrue(result["demo_only_parameters"])
         self.assertEqual(result["created_alerts"], 2)
@@ -561,6 +562,68 @@ class ApplicationTests(unittest.TestCase):
         self.assertEqual(
             result["scenarios"][0]["evidence_transaction_numbers"], ["D-R01-001"]
         )
+
+    def test_demo_judges_r17_by_its_persisted_severity_trace(self) -> None:
+        def r17_result(customer_id):
+            return SimpleNamespace(
+                rule_code="R17",
+                customer_id=customer_id,
+                result_status="evaluated",
+                parameter_status="PROVISIONAL",
+                score=None,
+                transactions=[],
+            )
+
+        class FakeDetectionService:
+            def evaluate_detailed(self, **kwargs):
+                return SimpleNamespace(
+                    run_id="r17-run",
+                    created_alerts=0,
+                    evaluation=DetectionEvaluation(
+                        results=[r17_result(11), r17_result(12)],
+                        summary={"rules": {}},
+                    ),
+                )
+
+        class FakeSession:
+            def execute(self, _statement):
+                return [
+                    (11, [{"step": 1, "status": "completed", "details": {"K": 3}},
+                          {"step": 2, "status": "completed", "details": {}}]),
+                    (12, [{"step": 1, "status": "completed", "details": {"K": 1}},
+                          {"step": 2, "status": "skipped", "details": {}}]),
+                ]
+
+        scenarios = [
+            {
+                "rule_code": "R17",
+                "customer_no": f"DEMO-{customer_id:03d}",
+                "account_no": f"DEMO-ACC-{customer_id:03d}",
+                "customer_id": customer_id,
+                "intent": "Several rules alert.",
+                "expected_signal": "K >= 2 rules",
+            }
+            for customer_id in (11, 12)
+        ]
+        service = DemoService(FakeSession(), FakeDetectionService())
+        with patch(
+            "backend.services.demo_service.seed_demo_data",
+            return_value={
+                "customers": 2,
+                "accounts": 2,
+                "transactions": 0,
+                "rules": 20,
+                "demo_customer_ids": [11, 12],
+                "demo_suspicious_customer_ids": [],
+                "scenarios": scenarios,
+            },
+        ), patch.object(DemoService, "status", return_value={"scenarios": []}):
+            result = service.seed(actor_id=7)
+
+        raised, not_raised = result["scenarios"]
+        self.assertIsNone(raised["score"])
+        self.assertTrue(raised["passed"])
+        self.assertFalse(not_raised["passed"])
 
     def test_demo_can_evaluate_saved_active_rule_settings(self) -> None:
         class FakeDetectionService:
@@ -620,7 +683,7 @@ class ApplicationTests(unittest.TestCase):
 
         customers = []
         accounts = []
-        for index in range(1, 25):
+        for index in range(1, DEMO_CUSTOMER_COUNT + 1):
             customer = SimpleNamespace(
                 customer_id=index,
                 customer_no=f"DEMO-{index:03d}",
@@ -669,12 +732,14 @@ class ApplicationTests(unittest.TestCase):
 
         self.assertTrue(inventory["seeded"])
         self.assertTrue(inventory["fixture_ready"])
-        self.assertEqual(inventory["customers"], 24)
-        self.assertEqual(inventory["accounts"], 24)
+        self.assertEqual(inventory["customers"], DEMO_CUSTOMER_COUNT)
+        self.assertEqual(inventory["accounts"], DEMO_CUSTOMER_COUNT)
         self.assertEqual(inventory["transactions"], 1)
-        self.assertEqual(len(inventory["customer_rows"]), 24)
+        self.assertEqual(len(inventory["customer_rows"]), DEMO_CUSTOMER_COUNT)
         self.assertEqual(inventory["transaction_rows"][0]["transaction_no"], "D-R01-001")
-        self.assertEqual(len(inventory["scenarios"]), 15)
+        self.assertEqual(len(inventory["scenarios"]), len(DEMO_SCENARIOS))
+        r17 = next(item for item in inventory["scenarios"] if item["rule_code"] == "R17")
+        self.assertEqual(r17["expected_signal"], "K >= 2 rules")
         self.assertEqual(inventory["scenarios"][0]["customer_no"], "DEMO-001")
 
     def test_deduplication_key_is_stable_and_scoped(self) -> None:

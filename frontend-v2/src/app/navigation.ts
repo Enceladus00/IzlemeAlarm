@@ -1,6 +1,7 @@
 import {
   Activity,
   BellRing,
+  ListChecks,
   Contact,
   FlaskConical,
   GitBranch,
@@ -18,6 +19,7 @@ export type NavSection = keyof Translation['nav']['sections'];
 export type NavId =
   | 'detectionOverview'
   | 'alerts'
+  | 'allAlerts'
   | 'transactions'
   | 'customers'
   | 'dataManagement'
@@ -45,6 +47,8 @@ export interface NavItem {
 export const NAV_ITEMS: readonly NavItem[] = [
   { id: 'detectionOverview', path: '/overview', section: 'monitoring', icon: LayoutDashboard, anyOf: ['dashboard:view'] },
   { id: 'alerts', path: '/alerts', section: 'monitoring', icon: BellRing, anyOf: ['alert:view'], editPermission: ['alert:update', 'alert:escalate', 'alert:confirm'] },
+  // E11: every alert in any status — a compliance screen (analysts work from their queue).
+  { id: 'allAlerts', path: '/all-alerts', section: 'monitoring', icon: ListChecks, anyOf: ['alert:confirm'] },
   { id: 'transactions', path: '/transactions', section: 'monitoring', icon: GitBranch, anyOf: ['customer:view'] },
   { id: 'customers', path: '/customers', section: 'monitoring', icon: Contact, anyOf: ['customer:view'] },
   { id: 'dataManagement', path: '/data', section: 'operations', icon: Upload, anyOf: ['upload:create', 'upload:view'] },

@@ -64,6 +64,9 @@ class AlertQueueItem(BaseModel):
     last_event: QueueEvent | None
     returned_by: str | None
     returned_note: str | None
+    # E04: the group's latest event is the escalation (new -> in_review).
+    escalated_by: str | None = None
+    escalation_note: str | None = None
 
 
 class AlertQueuePage(BaseModel):
@@ -343,6 +346,21 @@ class AuditLogPage(BaseModel):
 
 
 # --- Rules, uploads, users, system ------------------------------------------------
+
+
+class RuleFieldChange(BaseModel):
+    field: str
+    old: Any = None
+    new: Any = None
+
+
+class RuleHistoryEntry(BaseModel):
+    change_id: int
+    changed_at: datetime
+    actor_name: str | None
+    actor_role: str | None
+    reason: str | None
+    changes: list[RuleFieldChange]
 
 
 class RuleView(BaseModel):

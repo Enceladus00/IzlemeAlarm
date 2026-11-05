@@ -12,10 +12,11 @@ describe('permission-aware navigation (parity with frontend/app.py)', () => {
     expect(ids(ANALYST_PERMISSIONS)).toEqual(['detectionOverview', 'alerts', 'demoLab', 'rules']);
   });
 
-  it('gives compliance officers alerts, transaction analysis, rules and the audit log', () => {
+  it('gives compliance officers alerts, all alerts, transaction analysis, rules and the audit log', () => {
     expect(ids(COMPLIANCE_PERMISSIONS)).toEqual([
       'detectionOverview',
       'alerts',
+      'allAlerts',
       'transactions',
       'customers',
       'demoLab',

@@ -3,6 +3,7 @@ import { apiRequest, type QueryValue } from '@/api/client';
 import {
   alertDetailSchema,
   alertPageSchema,
+  alertPageWithCountsSchema,
   alertQueueSchema,
   compareRuleCodes,
   customerContextSchema,
@@ -26,7 +27,21 @@ export const alertKeys = {
   detail: (id: number) => ['alerts', 'detail', id] as const,
   customer: (customerNo: string, status?: string) => ['alerts', 'customer', customerNo, status ?? 'all'] as const,
   customerContext: (id: number) => ['alerts', 'customer-context', id] as const,
+  list: (query: AlertQuery) => ['alerts', 'list', query] as const,
 };
+
+/** Alerts per page on the "Tüm alarmlar" screen (E11). */
+export const ALL_ALERTS_PAGE_SIZE = 25;
+
+/** GET /alerts with per-status counts (E11) — every status, filtered and paged on the server. */
+export function useAlertList(query: AlertQuery) {
+  return useQuery({
+    queryKey: alertKeys.list(query),
+    queryFn: ({ signal }) =>
+      apiRequest('/alerts', { query: { ...query, include_counts: true }, schema: alertPageWithCountsSchema, signal }),
+    placeholderData: keepPreviousData,
+  });
+}
 
 /** GET /alerts/queue: customers grouped, sorted, searched and paged on the server (K1). */
 export function useAlertQueue(query: AlertQuery, enabled = true) {

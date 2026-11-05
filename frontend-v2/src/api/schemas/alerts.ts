@@ -40,6 +40,17 @@ export type AlertSummary = z.infer<typeof alertSummarySchema>;
 export const alertPageSchema = pageSchema(alertSummarySchema);
 export type AlertPage = z.infer<typeof alertPageSchema>;
 
+/** GET /alerts?include_counts=true (E11): the page plus counts per status under the same filters. */
+export const alertPageWithCountsSchema = alertPageSchema.extend({
+  counts_by_status: z.object({
+    new: z.number(),
+    in_review: z.number(),
+    closed: z.number(),
+    confirmed_suspicious: z.number(),
+  }),
+});
+export type AlertPageWithCounts = z.infer<typeof alertPageWithCountsSchema>;
+
 /* ---------------------------------------------------------------- K1 queue */
 
 export const queueEventSchema = z.object({
@@ -64,6 +75,8 @@ export const alertQueueItemSchema = z.object({
   last_event: queueEventSchema.nullable(),
   returned_by: z.string().nullable(),
   returned_note: z.string().nullable(),
+  escalated_by: z.string().nullable().optional(),
+  escalation_note: z.string().nullable().optional(),
 });
 export type AlertQueueItem = z.infer<typeof alertQueueItemSchema>;
 

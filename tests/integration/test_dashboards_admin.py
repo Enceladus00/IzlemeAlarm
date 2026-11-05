@@ -98,6 +98,31 @@ def test_rule_change_requires_a_reason(client, users, session):
     assert client.post("/rules/evaluate", headers=users["analyst"]["headers"]).status_code == 403
 
 
+def test_rule_history_lists_changed_fields_with_reason(client, users, session):
+    headers = users["compliance"]["headers"]
+    r05 = next(item for item in client.get("/rules", headers=headers).json() if item["rule_code"] == "R05")
+    thresholds = r05["thresholds"]
+    thresholds["BIREYSEL"] = {
+        "status": "PROVISIONAL",
+        "values": {"x_esik": 4, "x_kesin": 6, "history_days": 90, "kappa": "1", "mad_floor": "0.1", "income_bands": 3},
+    }
+    body = {"is_active": r05["is_active"], "weight": "0.37", "thresholds": thresholds, "reason": "Pilot eşik"}
+    assert client.put("/rules/R05", json=body, headers=headers).status_code == 200
+
+    # Analysts may read it too (rule:view).
+    response = client.get("/rules/R05/history", headers=users["analyst"]["headers"])
+    assert response.status_code == 200, response.text
+    latest = response.json()[0]
+    assert latest["reason"] == "Pilot eşik"
+    assert latest["actor_name"] == users["compliance"]["username"]
+    fields = {change["field"]: change for change in latest["changes"]}
+    assert fields["weight"]["new"] == "0.37"
+    assert fields["BIREYSEL.status"]["new"] == "PROVISIONAL"
+    assert fields["BIREYSEL.x_esik"]["new"] in (4, "4")
+    assert "KURUMSAL.status" not in fields
+    assert client.get("/rules/R99/history", headers=headers).status_code == 404
+
+
 def test_upload_rows_only_for_the_uploader(client, users, session):
     def batch(owner):
         row = UploadBatch(uploaded_by=owner, entity_type="customer", file_name="c.csv", total_rows=1, accepted_rows=0, rejected_rows=1)
@@ -131,7 +156,7 @@ def test_users_cannot_change_their_own_role_or_status(client, users):
 
 def test_system_overview_reports_schema_head(client, users):
     health = client.get("/admin/system-overview", headers=users["admin"]["headers"]).json()["health"]
-    assert health["schema_head"] == "0007_admin_all_permissions"
+    assert health["schema_head"] == "0008_query_indexes"
     assert health["schema_revision"] == health["schema_head"]
 
 

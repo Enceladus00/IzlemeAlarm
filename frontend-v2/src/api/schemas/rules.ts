@@ -26,6 +26,19 @@ export const ruleMetadataSchema = z.object({
 });
 export type RuleMetadata = z.infer<typeof ruleMetadataSchema>;
 
+/** GET /rules/{code}/history (E07): each save as changed fields, newest first. */
+export const ruleHistorySchema = z.array(
+  z.object({
+    change_id: z.number(),
+    changed_at: z.string(),
+    actor_name: z.string().nullable(),
+    actor_role: z.string().nullable(),
+    reason: z.string().nullable(),
+    changes: z.array(z.object({ field: z.string(), old: z.unknown().optional(), new: z.unknown().optional() })),
+  }),
+);
+export type RuleHistory = z.infer<typeof ruleHistorySchema>;
+
 /** GET /rules item (rule_service.py::list_rules). Legacy rules have metadata: null. */
 export const ruleSchema = z.object({
   rule_code: z.string(),

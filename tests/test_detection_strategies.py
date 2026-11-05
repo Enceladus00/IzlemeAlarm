@@ -33,6 +33,7 @@ from backend.detection.rules.r15_suspicious_contact import SuspiciousContactRule
 from backend.detection.rules.common import distribution_survival
 from backend.detection.scoring import calculate_score
 from backend.demo import (
+    DEMO_CUSTOMER_COUNT,
     DEMO_RULE_OVERRIDES,
     DEMO_SCENARIOS,
     _scenario_transactions,
@@ -77,12 +78,14 @@ def make_transaction(
     currency: str = "TRY",
     channel: str = "atm",
     tx_time: datetime | None = None,
+    country_code: str = "TR",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         transaction_id=transaction_id,
         amount=Decimal(amount),
         currency=currency,
         channel=channel,
+        country_code=country_code,
         tx_time=tx_time or AS_OF - timedelta(days=1),
         sender_account_id=sender_account_id,
         receiver_account_id=receiver_account_id,
@@ -484,10 +487,10 @@ class DetectionStrategyTests(unittest.TestCase):
         self.assertEqual(results[("R03", 3)].score, Decimal("0.9000"))
         self.assertEqual([tx.transaction_id for tx in results[("R03", 3)].transactions], [104, 105, 106])
 
-    def test_demo_fixture_exercises_all_fifteen_rule_scenarios(self) -> None:
+    def test_demo_fixture_exercises_every_rule_scenario(self) -> None:
         customers = []
         accounts = []
-        for customer_id in range(1, 25):
+        for customer_id in range(1, DEMO_CUSTOMER_COUNT + 1):
             customer = SimpleNamespace(
                 customer_id=customer_id,
                 customer_type="BIREYSEL" if customer_id <= 3 else "KURUMSAL",
@@ -518,6 +521,7 @@ class DetectionStrategyTests(unittest.TestCase):
                 currency="TRY",
                 tx_time=tx_time,
                 channel=channel,
+                country_code=country,
             )
             for transaction_id, (
                 number,
@@ -526,6 +530,7 @@ class DetectionStrategyTests(unittest.TestCase):
                 amount,
                 tx_time,
                 channel,
+                country,
             ) in enumerate(_scenario_transactions(AS_OF), 1)
         ]
         evaluation = DetectionEngine().evaluate(
@@ -544,19 +549,42 @@ class DetectionStrategyTests(unittest.TestCase):
             for result in evaluation.results
         }
 
-        self.assertEqual(len(DEMO_SCENARIOS), 15)
-        self.assertEqual(
-            {scenario[0] for scenario in DEMO_SCENARIOS},
-            set(DEMO_RULE_OVERRIDES),
-        )
-        self.assertEqual(evaluation.summary["transaction_count"], 80)
+        # Every registered rule has demo parameters and a scenario.
+        registry_codes = set(load_rule_registry())
+        self.assertEqual({scenario[0] for scenario in DEMO_SCENARIOS}, registry_codes)
+        self.assertEqual(set(DEMO_RULE_OVERRIDES), registry_codes)
+        self.assertEqual(evaluation.summary["transaction_count"], 93)
+        excluded = set(DEMO_RULE_OVERRIDES["R17"]["KURUMSAL"]["values"]["excluded_rules"])
+        alert_rules_by_customer: dict[int, set[str]] = {}
+        for result in evaluation.results:
+            if (
+                result.alert_mode == "ALERT"
+                and result.rule_code not in excluded
+                and result.score is not None
+                and result.score >= Decimal("0.5")
+            ):
+                alert_rules_by_customer.setdefault(result.customer_id, set()).add(
+                    result.rule_code
+                )
         for rule_code, customer_no, _account_no, _intent in DEMO_SCENARIOS:
-            result = results[(rule_code, int(customer_no[-3:]))]
+            customer_id = int(customer_no[-3:])
+            result = results[(rule_code, customer_id)]
             self.assertEqual(result.result_status, "evaluated", rule_code)
+            if rule_code == "R17":
+                # R17 acts on saved alerts; its target needs alerts from at
+                # least min_rules different rules in this run.
+                self.assertGreaterEqual(len(alert_rules_by_customer[customer_id]), 2)
+                continue
             self.assertGreaterEqual(result.score, Decimal("0.5"), rule_code)
             self.assertGreater(
                 evaluation.summary["rules"][rule_code]["elapsed_ms"], 0
             )
+        self.assertEqual(results[("S1", 26)].alert_mode, "SIGNAL_ONLY")
+        self.assertEqual(results[("S2", 27)].alert_mode, "SIGNAL_ONLY")
+        self.assertEqual(
+            {tx.transaction_no for tx in results[("R16", 25)].transactions},
+            {"D-R16-001", "D-R16-002"},
+        )
 
     def test_unset_parameters_skip_and_provisional_parameters_warn(self) -> None:
         customers = [make_customer(1)]

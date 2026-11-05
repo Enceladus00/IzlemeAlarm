@@ -1,6 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import type { AuditEvent } from '@/api/schemas/users';
+import { alertDetail, daysAgo, historyEvent, makeAlert } from '@/test/alertData';
 import { renderApp, storeSession } from '@/test/render';
 import { API, server } from '@/test/server';
 
@@ -99,5 +100,68 @@ describe('Audit log', () => {
     storeSession('admin');
     renderApp('/audit');
     expect(await screen.findByText('Henüz denetim olayı kaydedilmedi.')).toBeInTheDocument();
+  });
+});
+
+describe('Audit log · decision trail (E06)', () => {
+  it('traces an alert decision from the engine through two different people', async () => {
+    const alert = makeAlert({ alert_id: 7001, customer_no: 'C-1042', customer_name: 'Ahmet Yılmaz', rule_code: 'R05', status: 'confirmed_suspicious', created_at: daysAgo(3) });
+    server.use(
+      http.get(`${API}/audit-log`, () =>
+        HttpResponse.json({
+          total: 2,
+          items: [
+            {
+              audit_id: 2,
+              actor_id: 9,
+              actor_name: 'mehmet.ozturk',
+              actor_role: 'compliance',
+              action: 'alert.status_changed',
+              entity_type: 'alert',
+              entity_id: '7001',
+              details: { old_status: 'in_review', new_status: 'confirmed_suspicious' },
+              created_at: daysAgo(1),
+            },
+            {
+              audit_id: 1,
+              actor_id: 1,
+              actor_name: 'ayse.karaca',
+              actor_role: 'analyst',
+              action: 'ACCESS_DENIED',
+              entity_type: 'alert',
+              entity_id: '7001',
+              details: { permission: 'alert:confirm' },
+              created_at: daysAgo(2),
+            },
+          ],
+        }),
+      ),
+      http.get(`${API}/alerts/7001`, () =>
+        HttpResponse.json(
+          alertDetail(alert, {
+            history: [
+              historyEvent({ new_status: 'new', changed_at: daysAgo(3), changed_by: 0, actor_name: null, actor_role: null }),
+              historyEvent({ old_status: 'new', new_status: 'in_review', changed_at: daysAgo(2), changed_by: 1, actor_name: 'ayse.karaca', actor_role: 'analyst' }),
+              historyEvent({ old_status: 'in_review', new_status: 'confirmed_suspicious', changed_at: daysAgo(1), changed_by: 9, actor_name: 'mehmet.ozturk', actor_role: 'compliance' }),
+            ],
+          }),
+        ),
+      ),
+    );
+    storeSession('mehmet.ozturk');
+    const { user } = renderApp('/audit');
+    const table = await screen.findByRole('table', { name: 'Denetim kaydı' });
+
+    // The unauthorised attempt is a red row.
+    expect(within(table).getByText('Yetkisiz erişim denemesi').closest('tr')).toHaveClass('bg-danger-soft');
+
+    const decisionRow = within(table).getByText('Alarm kararı').closest('tr')!;
+    await user.click(within(decisionRow).getByRole('button', { name: 'Ayrıntıları göster' }));
+    const trail = await screen.findByRole('region', { name: 'Bu kararın izi' });
+    expect(within(trail).getByText('Kural motoru alarm üretti (R05)')).toBeInTheDocument();
+    expect(within(trail).getByText('Yeni → Uyum onayında')).toBeInTheDocument();
+    expect(within(trail).getByText(/ayse\.karaca · Analist/)).toBeInTheDocument();
+    expect(within(trail).getByText(/mehmet\.ozturk · Uyum Görevlisi/)).toBeInTheDocument();
+    expect(within(trail).getByText(/dört göz kuralı sağlandı/)).toBeInTheDocument();
   });
 });

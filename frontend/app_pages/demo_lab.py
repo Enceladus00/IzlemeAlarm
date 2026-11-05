@@ -76,7 +76,7 @@ if not inventory["seeded"]:
 if not inventory["fixture_ready"]:
     st.warning(
         "A partial or older demo dataset is present. Refresh the fixture to add "
-        "the full 24-customer, 15-rule scenario set."
+        "the full 32-customer, 20-rule scenario set."
     )
 
 scenario_rows = (

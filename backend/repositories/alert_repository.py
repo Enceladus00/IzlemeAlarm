@@ -48,22 +48,22 @@ class SqlAlchemyAlertRepository:
                 selectinload(Alert.transactions),
             )
         )
-        if status:
-            query = query.where(Alert.status == status)
+        filters = []
         if severity:
-            query = query.where(Alert.severity == severity)
+            filters.append(Alert.severity == severity)
         if rule_code:
-            query = query.where(MonitoringRule.rule_code == rule_code)
+            filters.append(MonitoringRule.rule_code == rule_code)
         if customer_no:
-            query = query.where(Customer.customer_no == customer_no)
+            filters.append(Customer.customer_no == customer_no)
         if date_from:
-            query = query.where(
-                Alert.created_at >= datetime.combine(date_from, time.min)
-            )
+            filters.append(Alert.created_at >= datetime.combine(date_from, time.min))
         if date_to:
-            query = query.where(
+            filters.append(
                 Alert.created_at < datetime.combine(date_to + timedelta(days=1), time.min)
             )
+        query = query.where(*filters)
+        if status:
+            query = query.where(Alert.status == status)
         total = int(
             self._session.scalar(select(func.count()).select_from(query.subquery()))
             or 0
@@ -76,6 +76,36 @@ class SqlAlchemyAlertRepository:
             ).unique()
         )
         return total, alerts
+
+    def count_alerts_by_status(
+        self,
+        *,
+        severity: str | None,
+        rule_code: str | None,
+        customer_no: str | None,
+        date_from: date | None,
+        date_to: date | None,
+    ) -> dict[str, int]:
+        """E11: alert counts per status under the same filters (status excluded)."""
+        query = (
+            select(Alert.status, func.count())
+            .join(Alert.customer)
+            .join(Alert.rule)
+            .group_by(Alert.status)
+        )
+        if severity:
+            query = query.where(Alert.severity == severity)
+        if rule_code:
+            query = query.where(MonitoringRule.rule_code == rule_code)
+        if customer_no:
+            query = query.where(Customer.customer_no == customer_no)
+        if date_from:
+            query = query.where(Alert.created_at >= datetime.combine(date_from, time.min))
+        if date_to:
+            query = query.where(
+                Alert.created_at < datetime.combine(date_to + timedelta(days=1), time.min)
+            )
+        return {status: int(count) for status, count in self._session.execute(query)}
 
     def alert_queue(
         self,

@@ -65,7 +65,8 @@ beforeEach(() => {
     http.get(`${API}/demo/status`, () => HttpResponse.json(status)),
     http.post(`${API}/demo/seed`, ({ request }) => {
       seedCalls.push(new URL(request.url).searchParams.get('use_saved_rules') ?? '');
-      return HttpResponse.json(run);
+      // The real POST /demo/seed response carries no seed_enabled flag.
+      return HttpResponse.json({ ...run, seed_enabled: undefined });
     }),
   );
 });
@@ -96,6 +97,8 @@ describe('Demo lab', () => {
     expect(within(execution).getByText('24')).toBeInTheDocument();
     expect(within(execution).getByText('3')).toBeInTheDocument();
     expect(within(execution).getByText('12,5')).toBeInTheDocument();
+    // Seeding stays available after a run (regression: the banner used to flip to "disabled").
+    expect(screen.getByRole('button', { name: 'Demo veriyi oluştur ve değerlendir' })).toBeInTheDocument();
   });
 
   it('browses customers, accounts and transactions with keyboard tabs', async () => {

@@ -94,6 +94,7 @@ def list_alerts(
     date_to: date | None = None,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
+    include_counts: bool = False,
     _user: AuthenticatedUser = Depends(require_permission("alert:view")),
     service: AlertService = Depends(get_alert_service),
 ) -> dict[str, Any]:
@@ -107,6 +108,7 @@ def list_alerts(
             date_to=date_to,
             offset=offset,
             limit=limit,
+            include_counts=include_counts,
         )
     except InvalidAlertUpdate as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -21,6 +21,7 @@ import { cn } from '@/utils/cn';
 import { formatDateTime, formatNumber } from '@/utils/format';
 import { useAlertDetail, useCustomerAlerts } from './api';
 import { CustomerContextCard } from './CustomerContextCard';
+import { DecisionContextCard } from './DecisionContextCard';
 import { ExplanationPanel } from './ExplanationPanel';
 import { MaskedTransactionTable } from './MaskedTransactionTable';
 import { StatusUpdateForm } from './StatusUpdateForm';
@@ -113,6 +114,8 @@ export default function AlertDetailPage() {
               </SummaryItem>
             </dl>
           </Card>
+
+          <DecisionContextCard alert={alert} />
 
           <ExplanationPanel explanation={alert.explanation} />
 

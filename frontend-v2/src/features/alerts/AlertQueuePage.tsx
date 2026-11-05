@@ -211,8 +211,8 @@ export default function AlertQueuePage() {
             <span>{t('alerts.columns.rules')}</span>
             <span>{t('alerts.columns.severity')}</span>
             <span className="text-right">{t('alerts.columns.count')}</span>
-            <span>{t('alerts.columns.oldest')}</span>
-            <span>{t('alerts.columns.lastActor')}</span>
+            <span>{filters.status === 'in_review' ? t('alerts.columns.waiting') : t('alerts.columns.oldest')}</span>
+            <span>{filters.status === 'in_review' ? t('alerts.columns.escalatedBy') : t('alerts.columns.lastActor')}</span>
             <span />
           </div>
 
@@ -331,6 +331,14 @@ function GroupRow({
   const panelId = `alerts-${item.customer_no}`;
   const ageDays = ageInDays(item.oldest_created_at, today);
   const fieldLabel = (text: string) => <span className="mr-2 text-xs text-muted md:sr-only">{text}</span>;
+  // E04: in the compliance queue the clock that matters is time since escalation.
+  const awaitingDecision = status === 'in_review';
+  const waitingDays = item.escalated_at ? ageInDays(item.escalated_at, today) : null;
+  const note = item.returned_note
+    ? { label: t('alerts.complianceNote'), text: item.returned_note }
+    : awaitingDecision && item.escalation_note
+      ? { label: t('alerts.analystNote'), text: item.escalation_note }
+      : null;
 
   return (
     <li className={cn('border-b border-border last:border-0', expanded && 'bg-accent-soft')}>
@@ -369,14 +377,31 @@ function GroupRow({
           {fieldLabel(t('alerts.columns.count'))}
           {formatNumber(item.alert_count, language)}
         </div>
+        {awaitingDecision ? (
+          <div className="text-[13px]">
+            {fieldLabel(t('alerts.columns.waiting'))}
+            {waitingDays === null ? (
+              <span className="text-muted">—</span>
+            ) : waitingDays === 0 ? (
+              t('alerts.waitingToday')
+            ) : (
+              <span className={cn(waitingDays > 2 && 'font-semibold text-warning')}>
+                {t('alerts.waitingDays', { count: waitingDays })}
+              </span>
+            )}
+          </div>
+        ) : (
+          <div className="text-[13px]">
+            {fieldLabel(t('alerts.columns.oldest'))}
+            {ageDays === 0 ? t('alerts.today') : t('alerts.days', { count: ageDays })}
+          </div>
+        )}
         <div className="text-[13px]">
-          {fieldLabel(t('alerts.columns.oldest'))}
-          {ageDays === 0 ? t('alerts.today') : t('alerts.days', { count: ageDays })}
-        </div>
-        <div className="text-[13px]" title={item.returned_note ?? undefined}>
-          {fieldLabel(t('alerts.columns.lastActor'))}
+          {fieldLabel(awaitingDecision ? t('alerts.columns.escalatedBy') : t('alerts.columns.lastActor'))}
           {item.returned_by ? (
             <span className="font-medium text-warning">{t('alerts.returnedBy', { name: item.returned_by })}</span>
+          ) : awaitingDecision && item.escalated_by ? (
+            <span className="font-medium">{item.escalated_by}</span>
           ) : (
             <span className="text-muted">—</span>
           )}
@@ -392,6 +417,13 @@ function GroupRow({
           </Button>
         </div>
       </div>
+
+      {note && (
+        <blockquote className="mx-5 mb-3 border-l-2 border-warning bg-warning-soft px-3 py-2 text-[13px] md:ml-12">
+          <span className="mr-1.5 font-semibold">{note.label}:</span>
+          <span className="whitespace-pre-line">{note.text}</span>
+        </blockquote>
+      )}
 
       {expanded && <ExpandedAlerts id={panelId} item={item} status={status} backSearch={backSearch} />}
     </li>

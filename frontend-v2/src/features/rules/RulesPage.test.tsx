@@ -137,3 +137,58 @@ describe('Rule management', () => {
     expect(screen.getByText('Score against anchors.')).toBeInTheDocument();
   });
 });
+
+describe('Rule management · hit rate and change history (E07)', () => {
+  it('flags a rule whose alerts are rarely confirmed', async () => {
+    server.use(
+      http.get(`${API}/dashboard/rule-performance`, () =>
+        HttpResponse.json([
+          { rule_code: 'R01', name: 'Near-limit activity', is_active: true, evaluated: 300, alerts: 144, avg_alert_score: '0.71', confirmed: 1, closed: 11, hit_rate: 1 / 12, provisional: false },
+          { rule_code: 'R02', name: 'Large single', is_active: true, evaluated: 300, alerts: 20, avg_alert_score: '0.95', confirmed: 6, closed: 4, hit_rate: 0.6, provisional: false },
+        ]),
+      ),
+    );
+    storeSession('mehmet.ozturk');
+    renderApp('/rules');
+    await screen.findByRole('heading', { name: /R01 — Near-limit activity/ });
+    // R01 is below 10% with enough decisions; R02 is fine.
+    expect(await within(ruleList()).findByText('Gözden geçir')).toBeInTheDocument();
+    expect(within(ruleList()).getAllByText('Gözden geçir')).toHaveLength(1);
+    expect(screen.getByText('İsabet %10 altında: eşikleri gözden geçirin.')).toBeInTheDocument();
+    expect(screen.getByText(/144 alarm · 1 şüpheli onaylandı · 11 kapatıldı/)).toBeInTheDocument();
+  });
+
+  it('lists saved changes with old and new values and the reason', async () => {
+    let historyCalls = 0;
+    server.use(
+      http.get(`${API}/rules/R01/history`, () => {
+        historyCalls += 1;
+        return HttpResponse.json([
+          {
+            change_id: 9,
+            changed_at: '2026-10-30T08:30:00',
+            actor_name: 'mehmet.ozturk',
+            actor_role: 'compliance',
+            reason: 'Kurum onayı 2026/14',
+            changes: [
+              { field: 'weight', old: '1.000', new: '0.450' },
+              { field: 'BIREYSEL.status', old: 'UNSET', new: 'PROVISIONAL' },
+              { field: 'BIREYSEL.window_days', old: null, new: 7 },
+            ],
+          },
+        ]);
+      }),
+    );
+    storeSession('ayse.karaca');
+    const { user } = renderApp('/rules');
+    const toggle = await screen.findByRole('button', { name: 'Değişiklik geçmişi' });
+    expect(historyCalls).toBe(0); // loaded only when opened
+    await user.click(toggle);
+    expect(await screen.findByText('Kurum onayı 2026/14')).toBeInTheDocument();
+    expect(screen.getByText('Birleşik risk ağırlığı:')).toBeInTheDocument();
+    expect(screen.getByText('0.450')).toBeInTheDocument();
+    expect(screen.getByText('Bireysel · durum:')).toBeInTheDocument();
+    expect(screen.getByText('GEÇİCİ')).toBeInTheDocument();
+    expect(screen.getByText('Bireysel · window_days:')).toBeInTheDocument();
+  });
+});

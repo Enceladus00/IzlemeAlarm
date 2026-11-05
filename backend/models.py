@@ -231,6 +231,7 @@ class Alert(Base):
         ),
         Index("idx_alert_status_created_at", "status", text("created_at DESC")),
         Index("idx_alert_customer_id", "customer_id"),
+        Index("idx_alert_rule_customer_status", "rule_id", "customer_id", "status"),
     )
 
     alert_id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -257,6 +258,9 @@ class Alert(Base):
 
 class AlertTransaction(Base):
     __tablename__ = "alert_transaction"
+    __table_args__ = (
+        Index("idx_alert_transaction_transaction_id", "transaction_id"),
+    )
 
     alert_id: Mapped[int] = mapped_column(
         ForeignKey("alert.alert_id"), primary_key=True
@@ -312,6 +316,7 @@ class RuleResult(Base):
             "weight_snapshot >= 0 AND weight_snapshot <= 1",
             name="ck_rule_result_weight_range",
         ),
+        Index("idx_rule_result_rule_customer", "rule_id", "customer_id"),
     )
 
     result_id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -350,6 +355,8 @@ class AlertStatusHistory(Base):
             "new_status NOT IN ('closed', 'confirmed_suspicious') OR "
             "NULLIF(BTRIM(note), '') IS NOT NULL"
         ),
+        Index("idx_alert_status_history_alert_changed", "alert_id", "changed_at"),
+        Index("idx_alert_status_history_changed_by", "changed_by", "changed_at"),
     )
 
     history_id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -366,6 +373,7 @@ class AlertStatusHistory(Base):
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
+    __table_args__ = (Index("idx_audit_log_entity", "entity_type", "entity_id"),)
 
     audit_id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     actor_id: Mapped[int | None] = mapped_column(ForeignKey("app_user.user_id"))

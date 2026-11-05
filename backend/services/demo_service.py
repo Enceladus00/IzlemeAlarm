@@ -5,8 +5,15 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload
 
-from backend.demo import DEMO_RULE_OVERRIDES, DEMO_SCENARIOS, seed_demo_data
-from backend.models import Account, Customer, Transaction
+from backend.demo import (
+    DEMO_CUSTOMER_COUNT,
+    DEMO_RULE_OVERRIDES,
+    DEMO_SCENARIOS,
+    DEMO_SUSPICIOUS_INDEX,
+    expected_signal,
+    seed_demo_data,
+)
+from backend.models import Account, Customer, MonitoringRule, RuleResult, Transaction
 from backend.services.detection_service import DetectionService
 
 
@@ -46,7 +53,7 @@ class DemoService:
                     .where(
                         sender.customer_id.in_(customer_ids),
                         receiver.customer_id.in_(customer_ids),
-                        Transaction.transaction_no.like("D-R%"),
+                        Transaction.transaction_no.like("D-%"),
                     )
                     .options(
                         joinedload(Transaction.sender_account),
@@ -73,7 +80,7 @@ class DemoService:
                 "account_no": account_no,
                 "customer_id": customers_by_number[customer_no].customer_id,
                 "intent": intent,
-                "expected_signal": "score >= 0.50",
+                "expected_signal": expected_signal(rule_code),
             }
             for rule_code, customer_no, account_no, intent in DEMO_SCENARIOS
             if customer_no in customers_by_number
@@ -82,7 +89,7 @@ class DemoService:
             "seeded": bool(customers),
             "fixture_ready": all(
                 f"DEMO-{index:03d}" in customers_by_number
-                for index in range(1, 25)
+                for index in range(1, DEMO_CUSTOMER_COUNT + 1)
             ),
             "customers": len(customers),
             "accounts": len(accounts),
@@ -163,18 +170,34 @@ class DemoService:
             (result.rule_code, result.customer_id): result
             for result in outcome.evaluation.results
         }
+        r17_traces = (
+            self._persisted_r17_traces(outcome.run_id)
+            if any(item["rule_code"] == "R17" for item in counts["scenarios"])
+            else {}
+        )
         scenarios = []
         for scenario in counts["scenarios"]:
             result = results_by_target.get(
                 (scenario["rule_code"], scenario["customer_id"])
             )
             score = result.score if result else None
-            triggered = (
-                result is not None
-                and result.result_status == "evaluated"
-                and score is not None
-                and score >= 0.5
-            )
+            if scenario["rule_code"] == "R17":
+                # R17 has no score: it raises the severity of open alerts after
+                # they are saved. It fired when K reached min_rules.
+                trace = r17_traces.get(scenario["customer_id"], [])
+                triggered = (
+                    result is not None
+                    and result.result_status == "evaluated"
+                    and len(trace) > 1
+                    and trace[1].get("status") == "completed"
+                )
+            else:
+                triggered = (
+                    result is not None
+                    and result.result_status == "evaluated"
+                    and score is not None
+                    and score >= 0.5
+                )
             scenarios.append(
                 {
                     **scenario,
@@ -207,7 +230,20 @@ class DemoService:
             ),
             "saved_rule_settings_used": use_saved_rules,
             "demo_data_isolated": True,
-            "synthetic_suspicious_customer_no": "DEMO-022",
+            "synthetic_suspicious_customer_no": f"DEMO-{DEMO_SUSPICIOUS_INDEX:03d}",
             "rule_summary": outcome.evaluation.summary["rules"],
             "scenarios": scenarios,
         }
+
+    def _persisted_r17_traces(self, run_id: Any) -> dict[int, list[dict[str, Any]]]:
+        """R17's step trace is completed by the repository after alerts are saved,
+        so it is read back from the stored rule results of this run."""
+        rows = self._session.execute(
+            select(RuleResult.customer_id, RuleResult.step_trace)
+            .join(MonitoringRule, RuleResult.rule_id == MonitoringRule.rule_id)
+            .where(
+                RuleResult.run_id == run_id,
+                MonitoringRule.rule_code == "R17",
+            )
+        )
+        return {customer_id: list(trace or []) for customer_id, trace in rows}

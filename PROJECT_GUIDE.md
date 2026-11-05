@@ -1,880 +1,730 @@
-# Project Guide: Understand the Transaction Monitoring MVP
+# Sentinel — Project Guide
 
-This guide is meant to help you explain how the project works—not just how to
-start it. It follows a request from the screen, through the API and business
-logic, down to PostgreSQL, and back. It also explains the important trade-offs
-and what the current version does **not** do.
+This guide explains how the transaction monitoring system works: what it does,
+how its parts fit together, how to run it, and how to change it safely. Read
+sections 1–3 for the big picture; the rest is reference material you can jump
+into when you need it.
 
-> **Scope:** This is a learning/demo MVP. It uses bearer-token login and RBAC,
-> but still uses synthetic data and simple deterministic rules; it is not a
-> production fraud-decision system and does not use machine learning.
+> **Scope.** Sentinel is a learning and demonstration MVP built on synthetic
+> data. Its rules are transparent, deterministic examples with provisional
+> thresholds. It is not a production fraud-decision system and uses no machine
+> learning.
 
-## Table of contents
+## Contents
 
-1. [The project in one minute](#1-the-project-in-one-minute)
-2. [Repository map](#2-repository-map)
-3. [How to run it](#3-how-to-run-it)
-4. [How one request travels through the system](#4-how-one-request-travels-through-the-system)
-5. [Database and entity model](#5-database-and-entity-model)
-6. [The API, route by route](#6-the-api-route-by-route)
-7. [Rule engine: exact behavior and math](#7-rule-engine-exact-behavior-and-math)
-8. [The demo dataset](#8-the-demo-dataset)
-9. [CSV upload and row-level errors](#9-csv-upload-and-row-level-errors)
-10. [The Streamlit screens](#10-the-streamlit-screens)
-11. [Migrations and database setup](#11-migrations-and-database-setup)
-12. [Configuration and dependencies](#12-configuration-and-dependencies)
-13. [Tests and how to verify changes](#13-tests-and-how-to-verify-changes)
-14. [Limits and deliberate omissions](#14-limits-and-deliberate-omissions)
-15. [Questions you should be able to answer](#15-questions-you-should-be-able-to-answer)
-16. [Glossary](#16-glossary)
-17. [Role-based access control](#17-role-based-access-control)
-18. [The React interface (frontend-v2)](#18-the-react-interface-frontend-v2)
+1. [What Sentinel does](#1-what-sentinel-does)
+2. [Architecture](#2-architecture)
+3. [Repository map](#3-repository-map)
+4. [Running it locally](#4-running-it-locally)
+5. [Users, roles and permissions](#5-users-roles-and-permissions)
+6. [The alert workflow](#6-the-alert-workflow)
+7. [The detection engine](#7-the-detection-engine)
+8. [Data model](#8-data-model)
+9. [API reference](#9-api-reference)
+10. [CSV upload](#10-csv-upload)
+11. [The demo lab](#11-the-demo-lab)
+12. [The interfaces](#12-the-interfaces)
+13. [Database migrations](#13-database-migrations)
+14. [Configuration](#14-configuration)
+15. [Testing](#15-testing)
+16. [How to change things](#16-how-to-change-things)
+17. [Limits and open items](#17-limits-and-open-items)
+18. [Glossary](#18-glossary)
 
-## 1. The project in one minute
+---
 
-This application accepts customer, account, and transaction records; evaluates
-transactions against 15 configurable rules (R01–R15); stores the resulting
-rule evaluations and analyst alerts; and gives a user screens to review alerts,
-upload CSVs, edit rule parameters, and see aggregate counts. Separate legacy
-R1–R4 indicators remain on the transaction-analysis screen.
+## 1. What Sentinel does
 
-It has three runtime pieces:
+A bank must spot suspicious transactions, have a compliance officer decide on
+them, and be able to show later who decided what and why. Sentinel models that
+process end to end:
 
-1. **Streamlit frontend** — draws the screens and sends HTTP requests.
-2. **FastAPI backend** — validates requests, runs queries and rule logic, and
-   writes changes.
-3. **PostgreSQL database** — stores the records, rules, alerts, upload reports,
-   and histories.
+1. **Data comes in.** Customers, accounts and transactions are uploaded as CSV
+   files. Invalid rows are rejected with a reason; valid rows are stored.
+2. **Rules look for patterns.** Twenty rules (R01–R18, S1, S2) score every
+   customer between 0 and 1. A score of 0.5 or more on an alerting rule opens
+   an **alert**.
+3. **An analyst reviews.** The analyst works from a queue grouped by customer,
+   sees why each rule fired ("Neden tetiklendi?"), and either closes the alert
+   as a false positive or escalates it.
+4. **A compliance officer decides.** Escalated alerts are confirmed as
+   suspicious, closed, or returned to the analyst. Whoever escalated an alert
+   may not make the final decision on it (**four eyes**).
+5. **Everything is recorded.** Decisions, rule changes, uploads, logins,
+   refused access attempts and views of customer data go to an append-only
+   audit log that the database itself refuses to edit or delete.
 
-SQLAlchemy maps Python classes to the existing PostgreSQL tables. Alembic
-tracks which database schema revision has been applied. These tools do not
-replace PostgreSQL: PostgreSQL remains the system of record.
+Three roles take part: **analyst**, **compliance officer** and
+**administrator** (section 5).
 
-The normal flow is:
+## 2. Architecture
 
 ```text
-User action in Streamlit
-    -> HTTP request to FastAPI
-        -> SQLAlchemy session
-            -> PostgreSQL query/transaction
-        <- result or explicit error
-    <- JSON response
-<- updated Streamlit screen
+ Browser ── React UI (frontend-v2) ──/api──► FastAPI ──SQLAlchemy──► PostgreSQL
+            served by Vite (dev) or nginx       │
+                                                └── detection engine (Python)
 ```
 
-## 2. Repository map
+| Layer | Technology | Responsibility |
+| --- | --- | --- |
+| Interface | React 19, TypeScript, Vite, TanStack Query, Tailwind | Screens. Calls only its own origin under `/api`; Vite (dev) or nginx (container) forwards to FastAPI, so the API needs no CORS. |
+| API | FastAPI, Pydantic, Uvicorn | Authentication, permission checks, validation, business workflows, the rule engine. |
+| Data | PostgreSQL, SQLAlchemy 2, Alembic | The system of record. Constraints and triggers protect integrity even if the API has a bug. |
 
-| Path | Responsibility |
+**The single rule that matters most:** the API enforces every permission.
+Hiding a button in the interface is a convenience only; a request sent directly
+to the API is checked the same way, and a refused attempt is logged as
+`ACCESS_DENIED`.
+
+### How a request travels
+
+Example: the analyst escalates two alerts.
+
+1. React posts `POST /api/alerts/decisions` with the alert IDs, target status
+   and note. Vite strips `/api` and forwards to FastAPI.
+2. `require_permission("alert:view")` reads the bearer token, reloads the user,
+   role and permissions from the database and rejects inactive users.
+3. The route (`backend/api/routes/alerts.py`) only translates HTTP. It calls
+   `AlertService` (`backend/services/`), which runs the workflow checks.
+4. The service uses a repository (`backend/repositories/`) for all SQL. The
+   whole decision is written in **one database transaction**: either every
+   alert changes or none does.
+5. The response is shaped by a Pydantic `response_model`
+   (`backend/api/responses.py`). Fields not in the model are dropped, so an
+   accidental extra field never reaches the browser.
+6. React validates the response with a zod schema (`src/api/schemas/`), then
+   refreshes the affected cached queries (queue, dashboards).
+
+Layer rules: routes translate HTTP and map errors to status codes; services
+hold workflows; repositories own queries; rule strategies are pure
+calculations. Keep SQL out of routes and HTTP out of services.
+
+## 3. Repository map
+
+| Path | What is there |
 | --- | --- |
-| `frontend/app.py` | Streamlit login, permission-based navigation, and optional demo-data action. |
-| `frontend/app_pages/` | Detection overview, alert investigation, transaction analysis, data management, rule management, user management, and audit-log pages. |
-| `frontend/components/` | Shared page headers, metric layouts, and transaction tables. |
-| `frontend/utils/api.py` | Shared HTTP client and user-facing API errors. |
-| `frontend-v2/` | React interface (Vite, TypeScript) with the same screens as Streamlit; see [section 18](#18-the-react-interface-frontend-v2). |
-| `Dockerfile.frontend-v2`, `frontend-v2/nginx.conf.template` | Container image that serves the React build with nginx and proxies `/api` to FastAPI. |
-| `backend/main.py` | FastAPI application factory and router composition. |
-| `backend/api/routes/` | Thin HTTP adapters grouped by authentication, analysis, alerts, audit, rules, transactions, uploads, and users. |
-| `backend/api/dependencies.py` | Constructs application services from the request-scoped database session. |
-| `backend/api_schemas.py` | Pydantic request/response data shapes for a few API payloads. |
-| `backend/database.py` | Lazily creates the SQLAlchemy engine/session factory and provides a session to each request. |
-| `backend/db_url.py` | Normalizes PostgreSQL connection URLs to the installed `psycopg2` driver. |
-| `backend/models.py` | SQLAlchemy entity definitions, including users, roles, and permissions. |
-| `backend/services/` | Application workflows for authentication, audit, analysis, alerts, demo seeding, detection, rules, transactions, uploads, and users. |
-| `backend/repositories/` | SQLAlchemy data-access implementations injected into services, including identity and audit repositories. |
-| `backend/detection/` | Detection engine contracts, validated parameters, shared scoring, and independent R01–R15 strategies. |
-| `backend/rules.py` | Backward-compatible exports for the detection service and deduplication helper. |
-| `backend/demo.py` | Creates the repeatable synthetic customer/account/transaction fixture and per-rule scenarios. |
-| `database/V1__initial_schema.sql` | Original PostgreSQL schema, constraints, indexes, triggers, and initial rule rows. |
-| `alembic.ini`, `alembic/` | Alembic configuration, original baseline, RBAC/rule-framework migrations, and R04–R15 rule seeding. |
-| `tests/test_application.py`, `tests/test_rbac.py` | Model, rule, and authorization regression tests. |
-| `.vscode/launch.json` | VS Code launch buttons for the API, UI, or both together. |
-| `.env.example` | Template for local configuration. Copy this to `.env` and set your own database URL. |
-| `backend/requirements.txt` | Backend dependencies, including FastAPI, SQLAlchemy, Alembic, bcrypt, PyJWT, and test tools. |
-| `frontend/requirements.txt` | Streamlit and its UI/data dependencies. |
+| `backend/main.py` | FastAPI app; `uvicorn backend.main:app` starts it. |
+| `backend/api/routes/` | HTTP endpoints by area: `alerts`, `analysis` (dashboards, health, demo, system), `audit`, `auth`, `customers`, `rules`, `transactions`, `uploads`, `users`. |
+| `backend/api/dependencies.py` | Builds services per request; `require_permission(...)`. |
+| `backend/api/responses.py` | Response models (what each endpoint may return). |
+| `backend/api_schemas.py` | Request bodies (e.g. a decision, a rule update). |
+| `backend/services/` | Workflows: `alert_service`, `alert_workflow` (transition table, four eyes), `detection_service`, `rule_service`, `upload_service`, `demo_service`, `masking`, `audit_service`, … |
+| `backend/repositories/` | SQLAlchemy queries and writes; `customer_view_log.py` writes `customer.viewed` audit rows. |
+| `backend/detection/` | The engine (`engine.py`), parameter models (`parameters.py`), scoring (`scoring.py`), severity and keys (`evidence.py`), the rule registry, and one file per rule in `rules/`. |
+| `backend/demo.py` | The synthetic demo fixture and its per-rule scenarios. |
+| `backend/models.py` | SQLAlchemy entities. |
+| `backend/security.py` | Password hashing (bcrypt) and JWT tokens (30 minutes). |
+| `backend/scripts/create_admin.py` | Creates the first administrator. |
+| `alembic/versions/` | Migrations `0001`–`0007` (section 13). |
+| `database/` | `V1`–`V6` SQL files mirroring the migrations, for manual setup and review. |
+| `frontend-v2/` | The React interface (section 12). Has its own `README.md`. |
+| `frontend/` | The original Streamlit interface — legacy, see section 12. |
+| `tests/` | Backend unit tests; `tests/integration/` runs against a real database. |
+| `Dockerfile.backend`, `Dockerfile.frontend-v2`, `Dockerfile.frontend` | Container images for the API, the React UI (nginx) and Streamlit. |
+| `.vscode/launch.json` | One-click launch configurations. |
+| `.env.example` | Configuration template. |
 
-FastAPI dependencies wire request-scoped repositories into services. Routers
-translate HTTP inputs and domain errors; services coordinate workflows;
-repositories own SQLAlchemy queries and persistence. Detection strategies
-implement independent algorithms and the detection service runs configured
-strategies through the shared engine. Keep UI rendering out of backend models
-and database queries out of HTTP adapters.
-
-## 3. How to run it
+## 4. Running it locally
 
 ### Prerequisites
 
-- Python 3.10 or newer.
-- A running PostgreSQL server and a database that the configured account can
-  access.
-- Python dependencies installed from both requirements files.
-- A local `.env` file containing a valid `DATABASE_URL`.
+- Python 3.10+ (the Docker image uses 3.12)
+- PostgreSQL with an empty database you can use for development
+- Node.js 20+ for the React interface
 
 ### First-time setup
 
-The exact install and run commands are in [README.md](./README.md). In order:
+```powershell
+# 1. Python environment and dependencies
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r backend\requirements.txt
 
-1. Create/select the project's `.venv`.
-2. Install backend and frontend dependencies.
-3. Configure `.env`.
-4. Apply the Alembic baseline with `alembic upgrade head`.
-5. In VS Code, select `.venv` as the interpreter.
-6. Choose **Start project (API + UI)** under **Run and Debug**, then press
-   **F5**.
-7. Open `http://127.0.0.1:8000/docs` to inspect/call the API. Streamlit opens
-   the interface in a browser, usually at `http://localhost:8501`.
-8. Click **Load demo data** in the UI sidebar to
-   insert demo rows and evaluate the rules.
+# 2. Configuration: copy the template and fill in DATABASE_URL and JWT_SECRET
+copy .env.example .env
 
-The API and UI are separate processes. If the UI opens but shows an API
-connection error, check that the API launch configuration is running and that
-`API_BASE_URL` points to it. If the API reports a database problem, inspect
-`DATABASE_URL`, PostgreSQL availability, and the migration revision.
+# 3. Create or upgrade the schema
+.\.venv\Scripts\alembic.exe upgrade head
 
-### VS Code launch configurations
+# 4. Create the first administrator (prompts for username and password)
+python -m backend.scripts.create_admin
 
-The launch compound starts two children:
+# 5. React dependencies
+cd frontend-v2
+npm install
+```
 
-- **API (FastAPI):** runs Uvicorn with `backend.main:app` on `127.0.0.1:8000`.
-- **UI (Streamlit):** runs `streamlit run frontend/app.py`.
-- **Start project (API + UI):** starts both; `stopAll` asks VS Code to stop the
-  pair together.
+### Starting it
 
-`backend.main:app` means “import the `app` object from `backend/main.py`.”
-Uvicorn is the HTTP server; pressing **Run Python File** on `main.py` is not
-equivalent to starting Uvicorn.
+**In VS Code:** open **Run and Debug** and start
+**Start project (API + React UI)**. This runs the API on
+`http://127.0.0.1:8000` (interactive docs at `/docs`) and the React app on
+`http://localhost:5173`.
 
-## 4. How one request travels through the system
+**From a terminal:**
 
-Consider clicking **Kuralları şimdi çalıştır** on the summary screen:
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+cd frontend-v2; npm run dev
+```
 
-1. Streamlit calls `api_request("POST", "/rules/evaluate")`.
-2. `api_request` builds an HTTP URL from `API_BASE_URL`, sends a `requests`
-   call, and applies a timeout.
-3. FastAPI matches `POST /rules/evaluate` to `run_rules` in `backend/main.py`.
-4. `Depends(get_db)` asks `backend/database.py` for a SQLAlchemy `Session`.
-5. The route calls `evaluate_rules(db)` in `backend/rules.py`.
-6. The rule service reads active rules and active transactions, creates alert
-   rows and alert/transaction links, then commits.
-7. The API returns JSON such as `{"created_alerts": 2}`.
-8. Streamlit displays the result and reruns the script to refresh the screen.
+### Seeing demo data
 
-If the request cannot reach the API, the frontend turns the `requests` failure
-into an `ApiError` and displays it. For non-2xx responses it extracts FastAPI's
-`detail` field where possible. Database errors are not converted into fake
-successful responses.
+1. Set `ENABLE_DEMO_ENDPOINTS=true` in `.env` and restart the API.
+2. Sign in as a user with `upload:create` (by default only the administrator).
+3. Open **Demo laboratuvarı** and press **Demo veriyi oluştur ve değerlendir**.
 
-### What a SQLAlchemy session does
+To try the full workflow you need at least one analyst and one compliance
+officer. The administrator creates them on **Kullanıcı yönetimi**.
 
-A `Session` is a unit of database work. Routes receive it from `get_db`; when
-the route finishes, the dependency closes it. A route that changes data
-explicitly calls `commit()`. If a database operation fails, routes that own
-that write roll back before reporting an error.
+### Troubleshooting
 
-`create_engine(..., pool_pre_ping=True)` creates the connection pool. The
-pre-ping checks a pooled connection before reusing it, helping detect
-connections PostgreSQL has already closed. The session factory is lazy: the
-connection engine is not created until the first request needs a database.
+| Symptom | Likely cause |
+| --- | --- |
+| Backend changes have no effect | The API was started without `--reload` (the VS Code launch configuration does not reload). Restart it. |
+| "Demo seeding is disabled" | `ENABLE_DEMO_ENDPOINTS` is not `true` in the environment of the **running** API. Restart after changing `.env`. |
+| API refuses to start | `JWT_SECRET` is missing. |
+| Every screen shows a server error | Check `GET /health`; then `DATABASE_URL`, that PostgreSQL is up, and `alembic current` vs `alembic heads`. |
+| A screen says "no permission" | Expected: the role lacks that permission (section 5). |
 
-## 5. Database and entity model
+## 5. Users, roles and permissions
 
-The SQL file describes the PostgreSQL schema; `backend/models.py` describes
-that same schema to Python/SQLAlchemy. Model classes do not automatically
-create or migrate tables. Alembic handles schema setup separately.
+### Roles
 
-### Main business entities
+| Permission | Analyst | Compliance officer | Administrator |
+| --- | :-: | :-: | :-: |
+| `alert:view` — see alerts and the queue | ● | ● | ● ¹ |
+| `alert:update` — close a **new** alert (false positive) | ● | | ● ¹ |
+| `alert:escalate` — send a new alert to compliance | ● | | ● |
+| `alert:confirm` — decide on escalated alerts; see any alert's customer data | | ● | ● |
+| `customer:view` — customers, accounts, transaction analysis | | ● | ● ¹ |
+| `dashboard:view` — overview and demo lab | ● | ● | ● |
+| `rule:view` — read rules | ● | ● | ● |
+| `rule:edit` — change rules, run rules now | | ● | ● |
+| `audit:view` — audit log | | ● | ● |
+| `upload:create`, `upload:view` — CSV upload and reports | | | ● |
+| `user:manage` — users and system overview | | | ● |
+| `role:manage` — reserved, no endpoint yet | | | ● |
+
+¹ **Development setting.** The design (decision K13) says the administrator
+manages the system but never sees alert or customer content. Migration `0006`
+implements that; migration `0007` deliberately gives the administrator every
+permission again while the project is in development. To restore K13, run
+`alembic downgrade 0006_alert_workflow`. Any permission added by a future
+migration must also be granted to the administrator in that migration.
+
+The compliance officer intentionally does **not** have `alert:update`: they
+cannot close a `new` alert directly and skip the analyst step.
+
+A legacy `auditor` role exists only if an old database contained auditor users;
+it has no permissions.
+
+### Authentication
+
+- `POST /auth/login` takes a form (`username`, `password`) and returns an HS256
+  bearer token valid for **30 minutes**. Wrong password, unknown user and
+  inactive user all get the same answer, so usernames cannot be probed.
+- Every protected request reloads the user, role and permissions from the
+  database, so deactivating a user or changing a role takes effect immediately.
+- Public endpoints: `POST /auth/login` and `GET /health` only.
+- The React app keeps the token in memory and `sessionStorage` (a refresh keeps
+  the session; closing the tab ends it) and signs out on expiry or any 401.
+- A user cannot change their own role or deactivate themselves (403).
+- Users are never deleted, only deactivated.
+
+## 6. The alert workflow
+
+### Statuses and transitions
 
 ```text
-Customer 1 --- many Account
-Account  1 --- many Transaction as sender
-Account  1 --- many Transaction as receiver
-Customer 1 --- many Alert
-Alert    many --- many Transaction (through alert_transaction)
+          analyst: escalate                 compliance: confirm
+   new  ───────────────────►  in_review  ───────────────────►  confirmed_suspicious
+    │   ◄───────────────────      │
+    │     compliance: return      │ compliance: close
+    │ analyst: close              ▼
+    └──────────────────────────► closed
 ```
 
-- **Customer:** a person or organization being monitored.
-- **Account:** belongs to one customer and has a currency.
-- **Transaction:** moves a positive amount from one account to another at a
-  recorded time. The account foreign keys give the application both sides of
-  the transfer.
-- **MonitoringRule:** a rule code, name, description, on/off flag, and JSONB
-  thresholds.
-- **Alert:** one rule's finding for one customer. Its status and severity are
-  stored on this row.
-- **AlertTransaction:** link table identifying which transactions support an
-  alert. Its composite primary key prevents the same transaction from being
-  linked twice to the same alert.
-
-### Operational and history entities
-
-- **AppUser:** stores a password hash, active flag, and required role foreign
-  key. Request-side audit attribution comes from the authenticated user.
-- **AppRole / Permission:** active roles link to permissions through
-  `role_permission`.
-- **UploadBatch:** one CSV upload, with entity type, file name, row counts, and
-  uploader reference.
-- **UploadRowError:** rejected CSV row number, reason, and submitted row data.
-- **AlertStatusHistory:** append-only record of alert status transitions.
-- **RuleChangeLog:** append-only old/new threshold snapshots for a rule edit.
-- **AuditLog:** append-only record of significant application actions.
-
-### Constraints and indexes
-
-Database constraints are the last integrity boundary even if API validation is
-missed:
-
-- Customer/account/transaction numbers are unique.
-- Transactions reference existing sender/receiver accounts and have positive
-  amounts.
-- Transaction channel and country-code formats are constrained.
-- Alert status/severity values are constrained; users reference an active role
-  at authentication time.
-- Closing or confirming an alert requires a nonblank note.
-- Alert deduplication keys are unique.
-- SQL triggers reject UPDATE/DELETE on the three append-only history tables.
-
-Indexes help common lookups such as transactions by account/time, alerts by
-status/time, alerts by customer, and upload errors by batch.
-
-## 6. The API, route by route
-
-The route implementations are in `backend/main.py`; the interactive reference
-is available at `/docs` while the API is running.
-
-| Method and route | Purpose | Access | Important behavior |
-| --- | --- | --- | --- |
-| `POST /auth/login` | Exchange username/password form for a token. | Public | Returns a 30-minute bearer token; failures use a generic response. |
-| `GET /auth/me` | Return current username, role, and sorted permissions. | Authenticated | Reloads role and permissions from the database. |
-| `GET /health` | Check database connectivity. | Public | Runs `SELECT 1`; returns 503 when the database cannot be reached. |
-| `GET /dashboard/summary` | Return record totals, severity/rule distributions, and recent detection trends. | `dashboard:view` | Uses SQL `COUNT` and `GROUP BY`. |
-| `GET /alerts` | List/filter alerts. | `alert:view` | Supports status, severity, rule code, date range, offset, and bounded page size. |
-| `GET /alerts/rule-codes` | Return alert rule-filter choices. | `alert:view` | Does not expose rule thresholds. |
-| `GET /alerts/{alert_id}` | Show one alert, linked customer, transactions, and status history. | `alert:view` | Returns only transactions linked through `alert_transaction`. |
-| `GET /alerts/{alert_id}/customer-transactions` | Load investigation history for the alert's customer. | `alert:view` | Derives customer scope from the alert ID; accepts no customer ID. |
-| `PATCH /alerts/{alert_id}/status` | Change status or record analyst reasoning. | `alert:update` | The authenticated user's ID is written to history and audit records. |
-| `GET /transactions` | Filter and inspect account-to-account transfers. | `customer:view` | Supports date, customer, direction, and amount filters. |
-| `GET /customers/{customer_no}/transactions` | Show a customer's transaction history. | `customer:view` | Generic customer history; analysts use the alert-scoped route instead. |
-| `GET /rules` | Read rule descriptions, active flags, and thresholds. | `rule:view` | Rules are returned ordered by code. |
-| `PUT /rules/{rule_code}` | Save a rule's active flag and thresholds. | `rule:edit` | Rejects invalid values with 422 and attributes the actor from the token. |
-| `POST /rules/evaluate` | Evaluate active rules against stored transactions. | `rule:edit` | Manual evaluation; automatic upload evaluation needs no extra permission. |
-| `POST /demo/seed` | Seed demo data and evaluate it. | `upload:create` + `ENABLE_DEMO_ENDPOINTS=true` | Disabled by default; repeat calls avoid duplicate demo records. |
-| `GET /demo/status` | Read the synthetic demo fixture inventory. | `dashboard:view` | Lists reserved `DEMO-*` customers, accounts, transactions, and rule-scenario targets. |
-| `POST /uploads?entity=...` | Upload customer/account/transaction CSV. | `upload:create` | Validates CSV and attributes the batch to the authenticated user. |
-| `GET /uploads/{batch_id}` | Retrieve one upload report. | `upload:view` | Includes stored row errors; returns 404 for an unknown batch. |
-| `GET /users`, `GET /users/roles` | List users and assignable active roles. | `user:manage` | Never returns password hashes. |
-| `POST /users`, `PATCH /users/{user_id}` | Create, deactivate, or change a user's role. | `user:manage` | User records are deactivated, never deleted. |
-| `GET /audit-log` | View audit events. | `audit:view` | Returns a bounded, newest-first page. |
-
-### Why the frontend calls the API
-
-The Streamlit UI is a client of the API, rather than a direct database client.
-That keeps SQL and business logic in one place. The API requires bearer-token
-authentication and enforces permissions independently of the UI.
-
-### Alert status transition behavior
-
-The schema accepts `new`, `in_review`, `closed`, and
-`confirmed_suspicious`. The API currently permits moving between any of these
-valid values; it does not enforce a more restrictive workflow graph. A note is
-mandatory only for `closed` and `confirmed_suspicious`. Sending the current
-status again returns `changed: false` and creates no history row.
-
-## 7. Rule engine: exact behavior and math
-
-The active rule thresholds are read independently from each
-`monitoring_rule.thresholds` JSONB value. The Streamlit rule-management page
-uses metadata-driven guided fields; the API validates those fields against
-each strategy's Pydantic parameter model. Existing saved R01/R03
-configurations that omit the new date-window or band settings receive
-conservative defaults when validated. Each rule owns its own parameters; one
-rule does not read another rule's settings. R04–R15 are seeded inactive with
-`UNSET` parameters. A rule can be activated once at least one customer type
-has configured parameters; any type left `UNSET` is skipped during evaluation.
-Feasibility ratings and analyst review notes are returned by the rules API and
-shown in the UI.
-
-The engine loads active customers and active transactions once, evaluates each
-registered rule strategy, and returns one result per rule/customer. It stores
-the parameter snapshot, score, trace, and supporting transactions in
-`rule_result` and `rule_result_transaction`. For alert-mode results with a
-score of at least 0.5, the repository creates an analyst alert and links
-available transaction evidence. Aggregate-only R04 alerts intentionally have
-no transaction links; their calculation trace is stored in `rule_result`.
-Amount comparisons use `Decimal`.
-
-The current detection registry contains R01 through R15. The legacy R1–R4
-transaction-analysis indicators are separate and do not create alerts through
-this engine.
-
-### R01 — Near-limit outgoing activity
-
-For each customer, R01 considers active outgoing transactions in the
-configured `income_currency` during the configured calendar-day window,
-starting at midnight on `run_date - window_days + 1`. It excludes transfers
-between accounts owned by the same customer. The near-limit band is
-`[band_low * L, L)`, where `L` is the configured limit for `income_currency`.
-The band count is the score input `x`, and the band amounts are summed for the
-monthly-income ratio check.
-
-An eligible transaction in `[L, above_check * L)` forces the score to zero.
-Otherwise the score is suppressed if the income ratio is below
-`minimum_income_ratio`. To avoid alerts without this safeguard, missing or
-zero monthly income also suppresses the score for now; this is explicitly
-marked for analyst review in the Rule Management screen. Currency conversion
-is not performed.
-
-### R02 — Large single transaction
-
-R02 considers active incoming and outgoing transactions on the run date, up
-to (but not including) the evaluation timestamp. It applies the configured
-customer-type/currency limit independently to each transaction. If any amount
-is greater than or equal to its limit, the score is 1 and **all** qualifying
-transactions are attached as evidence; otherwise the score is 0. Unsupported
-currencies are ignored. A qualifying result creates an analyst alert; there
-is no INFO-only or signal-only outcome.
-
-### R03 — Repeated cash-channel deposits
-
-R03 considers active incoming transactions in the configured cash channels
-during the configured calendar-day window. Amounts strictly below the
-configured limit are counted. To avoid combining unrelated activity, counts
-are currently evaluated separately by receiving account and currency, and
-transfers between accounts of the same customer are excluded. The highest
-account/currency count supplies the score input and evidence. This conservative
-scope is marked for analyst review; R03 owns its limits rather than depending
-on R02's configuration. Cash-channel choices are also institution-owned and
-should be approved by an analyst.
-
-### Shared scoring and alert handling
-
-R01 and R03–R13 (except R14 and R15), plus the ping-pong component of R14, use
-a sigmoid score. The configured `x_esik` is the 0.5 score point and
-`x_kesin` is the 0.9 point; the implementation scales by `ln(9)` so both
-anchors are exact. R02 is binary, R14 takes the larger of its cycle and
-ping-pong scores, and R15 uses 1 for direct contact or configured `gamma` for
-contact through one intermediary.
-
-Alerts with scores from 0.5 upward are assigned `low` below 0.7, `medium` from
-0.7 to below 0.9, and `high` at 0.9 or above. At most one alert per
-rule/customer/run date is created; PostgreSQL's unique deduplication key and
-`ON CONFLICT DO NOTHING` make repeated or concurrent evaluations idempotent.
-Same-day evaluations accumulate evidence on the existing alert and retain its
-highest score/severity. That daily grouping can combine distinct same-day
-episodes, so it is also listed for analyst review in the Rule Management
-screen. The application uses its existing `new` alert status for an open
-analyst item; it does not add a separate literal `OPEN` status.
-
-Rules run when the user presses “Evaluate rules now”, when transaction CSV
-uploads contain accepted rows, and through the optional demo seed. R15 loads
-historical `confirmed_suspicious` status events and active accounts for those
-customers to build its contact context. There is no scheduled background
-evaluation.
-
-### Rule-by-rule feasibility
-
-These ratings describe implementation/data feasibility, not predictive
-quality or regulatory suitability. New rules remain inactive pending
-institution-specific thresholds and analyst approval.
-
-| Rule | Feasibility | Main review item |
+| From → To | Needs | Meaning in the UI |
 | --- | --- | --- |
-| R01 | Medium | Monthly-income currency is not stored; the selected income currency is an analyst-approved assumption. |
-| R02 | High | Simple currency-specific amount comparison; threshold calibration and alert workload are institution-owned. |
-| R03 | Medium | Cash-channel classification and account/currency aggregation need analyst approval. |
+| `new` → `closed` | `alert:update` | Kapat · yanlış alarm |
+| `new` → `in_review` | `alert:escalate` | Uyum görevlisine yükselt |
+| `in_review` → `confirmed_suspicious` | `alert:confirm` | Şüpheli olarak onayla |
+| `in_review` → `closed` | `alert:confirm` | Kapat · açıklaması var |
+| `in_review` → `new` | `alert:confirm` | Analiste geri gönder |
 
-#### R04–R15 — Extended rules
+`closed` and `confirmed_suspicious` are final. The table lives in
+`backend/services/alert_workflow.py`; the React form mirrors it in
+`features/alerts/workflow.ts`.
 
-| Rule | Behavior | Feasibility | Main review item |
+### Rules every decision follows
+
+- **A note is required** for every decision (1–2,000 characters).
+- **Four eyes:** the user who made the latest escalation of an alert cannot
+  confirm or close it. This holds even with a single compliance officer, and
+  even for the administrator.
+- **Group decisions are atomic.** `POST /alerts/decisions` takes 1–50 alerts of
+  **one customer in one status**. If any alert fails a check, nothing changes.
+  Each alert gets its own history row and audit row; they share a
+  `decision_id`.
+- **Check order** (so error messages never reveal what a user may not do):
+  401 not signed in → 403 no permission for the target status → 422 invalid
+  body → 404 alert missing → 422 different customers/statuses → 422 transition
+  not in the table → 403 no permission for this transition → 403 four eyes.
+
+### The queue (`GET /alerts/queue`)
+
+One row per **customer**, built on the server: all of the customer's pending
+alerts, the rules that fired, the highest severity, the oldest alert, and
+summary counts over **all** matching alerts (not just the visible page).
+
+- Analysts default to `status=new`, sorted by severity, then oldest alert.
+- Compliance defaults to `status=in_review&sort=waiting` (longest-waiting
+  escalation first). Each row shows who escalated, the analyst's note and how
+  long it has waited; more than 2 days is highlighted.
+- A case sent back by compliance shows "Geri gönderildi · name" and the note.
+- Compliance also has **Tüm alarmlar** (`/all-alerts`): every alert in any
+  status, with a count per status, 25 per page.
+
+### The alert detail page
+
+Top to bottom: the decision context ("Analist neden yükseltti?", the reason it
+was returned, or the final decision summary), **Neden tetiklendi?** (the rule's
+own stored calculation, section 7), linked transactions, customer context, the
+decision form, the history (with who did what) and the customer's other alerts.
+
+### Customer data, masking and view logging
+
+- **Customer context** (`GET /alerts/{id}/customer-context`): profile, masked
+  accounts, last-30-day totals and up to **6 months** of masked transactions.
+  Analysts may load it only while the alert is `new`; compliance for any
+  status (`alert:confirm`).
+- **Masking happens on the server**, because anything sent to the browser is
+  readable in its developer tools. Individuals: `Ömer Kılıç` → `Ö. Kılıç`;
+  companies: `Nehir Lojistik A.Ş.` → `Nehir L. A.`; account numbers: `…7781`.
+  Users with `customer:view` receive full values on the alert detail page.
+- **Every view of a customer's personal data writes a `customer.viewed` audit
+  row** (BDDK information-systems regulation, article 13). Repeat views of the
+  same customer by the same user within 30 minutes are not logged again. If the
+  audit row cannot be written, the data is not returned (503).
+- Audit readers without alert/customer access see notes and viewed customer
+  numbers as `[gizli]`.
+
+## 7. The detection engine
+
+### When rules run
+
+- After a CSV upload of transactions with at least one accepted row (attributed
+  to the uploader).
+- When a user with `rule:edit` presses **Kuralları çalıştır**
+  (`POST /rules/evaluate`).
+- During the demo seed, restricted to demo data.
+
+There is no scheduled (nightly) run.
+
+### One run, step by step
+
+1. Load active customers, active transactions and every rule row.
+2. Run each **active** rule. Order matters: transaction rules first
+   (R01–R16, S1, S2), then **R18** (it combines this run's scores), then
+   **R17** (it acts on saved alerts).
+3. For each rule and customer, store a `rule_result`: parameter snapshot,
+   status, raw value `x`, score and a step-by-step trace, plus links to the
+   evidence transactions (`rule_result_transaction`). Every run is recorded in
+   `detection_run`.
+4. Open or update alerts (below), then apply R17.
+5. Commit everything in one transaction.
+
+### Parameters
+
+Each rule stores two parameter sets in `monitoring_rule.thresholds`, one per
+customer type (`BIREYSEL`, `KURUMSAL`), each with a status:
+
+| Status | Effect |
+| --- | --- |
+| `UNSET` | Customers of that type are skipped (recorded as `skipped_unset`). |
+| `PROVISIONAL` | Evaluated; alerts warn that thresholds are not approved yet. |
+| `APPROVED` | Evaluated with institution-approved values. |
+
+A rule can be activated only when at least one type is not `UNSET`. Values are
+validated by the rule's Pydantic model (`backend/detection/parameters.py`), and
+every change requires a written reason. The rule screen offers "copy Bireysel
+values to Kurumsal" because some rules (R13, R14, R17, R18) are meant to use
+one set. Each rule also has a **weight** (0–1) used only by R18.
+
+### Scoring
+
+Most rules turn their raw value `x` into a score with a sigmoid anchored on two
+parameters: `x = x_esik` gives **0.5**, `x = x_kesin` gives **0.9**
+(`backend/detection/scoring.py`; the curve is scaled by ln 9 so both anchors
+are exact). Some rules differ: R02 is binary (0 or 1), R14 takes the larger of
+its cycle and ping-pong scores, R15 gives 1 for direct contact and `gamma` for
+one intermediary, and R18 returns its combined value directly.
+
+| Score | Result | Severity |
+| --- | --- | --- |
+| < 0.5 | No alert | — |
+| 0.5 – < 0.7 | Alert | low |
+| 0.7 – < 0.9 | Alert | medium |
+| ≥ 0.9 | Alert | high |
+
+### How alerts are opened (no duplicates)
+
+- If the customer already has an **open** (`new` or `in_review`) alert for the
+  same rule, no new alert is opened. A higher score updates the alert's score
+  and severity (logged as `alert.rescored`) and new evidence is attached.
+  Severity never goes down.
+- Otherwise a new alert is opened. If the rule fires again after the earlier
+  alert was closed, a new alert is opened (with a numbered deduplication key).
+- A database advisory lock stops two simultaneous runs from opening the same
+  alert twice.
+- Signal-only rules (S1, S2) never open alerts.
+
+### "Neden tetiklendi?"
+
+Every alert links back to the `rule_result` that produced its current score.
+The detail page shows a one-sentence summary per rule, the raw value against
+`x_esik`/`x_kesin`, and the full step list. Because the parameters are
+snapshotted, the explanation stays correct even after the rule is changed.
+
+### The rules
+
+| Code | Name | Mode | Idea in one line |
 | --- | --- | --- | --- |
-| R04 | Compare the larger of recent external incoming/outgoing TRY volume with monthly income. | Medium | Customer income has no stored currency; TRY is assumed. Aggregate alerts have no transaction links. |
-| R05 | Compare current transaction log-amounts with robust own-history and income-band peer baselines. | Medium | Income groups use deterministic equal-count ranking; histories are currency-scoped and peers need sufficient data. |
-| R06 | Compare current-week activity to prior weekly counts using Poisson/negative-binomial tail probability. | Medium | Internal transfers are excluded; validate the standard-library tail calculation and seasonal factors on reference data. |
-| R07 | Detect renewed high-volume activity in dormant accounts. | High | Account ownership, active status, and transaction history must be accurate. |
-| R08 | Score transfers on recently opened accounts against currency-specific limits. | High | Missing account opening dates are skipped; dates are interpreted as calendar days. |
-| R09 | Compare current-period cash share to the immediately preceding period. | Medium | Raw ratios are not adjusted for unequal period lengths; cash channels require approval. |
-| R10 | Detect high incoming volume followed by transfers to recently contacted recipients. | Medium | Uses an evaluation-time-ending window and compares amounts only within currency. |
-| R11 | Count newly encountered sender accounts in a calendar-day window. | Medium | Cash/custody exclusions are manually configured account IDs. |
-| R12 | Count newly encountered recipients, with an equal-amount multiplier based on within-currency variation. | Medium | Uses population standard deviation; exclusions and multiplier need calibration. |
-| R13 | Find fast, decreasing, same-currency external transaction chains. | Low | Path enumeration can be expensive in dense graphs; workload performance needs measurement. |
-| R14 | Find same-currency cycles and near-equal A→B/B→A pairs. | Low | Cycle search can be expensive; cycle and relative-difference interpretations need calibration. |
-| R15 | Find direct or one-intermediary contact with customers having a historical confirmed-suspicious status. | Medium | Only the existing confirmed status is supported; path depth is limited to one intermediary. |
+| R01 | Bölme (structuring) | Alert | Several outgoing transfers just below the limit. |
+| R02 | Büyük tek işlem | Alert | One transaction at or above the limit (binary). |
+| R03 | Çok sayıda nakit yatırma | Alert | Repeated below-limit cash deposits into one account. |
+| R04 | Gelir-hacim uyumsuzluğu | Alert | Recent volume far above monthly income. |
+| R05 | Olağandışı tutar | Alert | Amount unusual against own history and income peers (robust z). |
+| R06 | Hız artışı | Alert | This week's count improbably high against prior weeks. |
+| R07 | Uyuyan hesap uyanması | Alert | High activity after a dormant period. |
+| R08 | Yeni hesapta yüksek hareket | Alert | High volume on a recently opened account. |
+| R09 | Nakit yoğunluğu | Alert | Cash share rising against the previous period. |
+| R10 | Geçiş hesabı | Alert | Money in, quickly out to new recipients. |
+| R11 | Para toplama (fan-in) | Alert | Many new senders. |
+| R12 | Dağıtma (fan-out) | Alert | Many new recipients, similar amounts. |
+| R13 | Katmanlama zinciri | Alert | Fast chain of transfers, each slightly smaller. |
+| R14 | Döngü ve ping-pong | Alert | Money returns to its start, or goes back and forth. |
+| R15 | Şüpheli hesapla temas | Alert | Direct or one-step contact with a confirmed-suspicious customer. |
+| R16 | Listelenmiş ülke | Alert | Volume with listed (high-risk) countries. |
+| S1 | Yuvarlak tutar | Signal only | Share of big outgoing transfers that are round amounts. |
+| S2 | Merkez hesap | Signal only | Far more counterparties than peers of the same type. |
+| R17 | Çoklu uyarı | Severity raise | Open alerts from ≥ `min_rules` different rules raise their severity one step (once per alert). No score. |
+| R18 | Birleşik risk skoru | Alert | `A = min(1, (Σ (weight·score)^p)^(1/p))` over this run's scores; alert when `A ≥ alert_threshold`. |
 
-R05–R15 use active transaction records and the date/currency/ownership
-boundaries documented in their stored rule traces. R06, R13, and R14 are
-especially sensitive to historical-data quality and volume. Feasibility labels
-are planning guidance, not approval to use a rule for production decisions.
+Each rule's file in `backend/detection/rules/` holds its exact steps,
+parameters and analyst review notes; the rules screen shows the same
+information. New rules start **inactive and `UNSET`**.
 
-## 8. The demo dataset
+The legacy rules **R1–R4** (from the original schema) remain in the database,
+inactive, with no implementation. Their old alerts keep working but have no
+"Neden tetiklendi?" calculation.
 
-`backend/demo.py` creates a repeatable, synthetic monitoring fixture using
-stable `DEMO-*` customer, account, and transaction numbers. It contains 24
-customers, 24 TRY accounts, and 80 transactions spanning recent activity and
-historical windows. Fifteen scenario labels map each rule to its intended
-customer/account and describe the activity designed to exercise it. These are
-coverage examples for inspecting rule behavior, not a statistically
-representative test population or production-threshold validation.
+## 8. Data model
 
-The seed evaluates all R01–R15 using synthetic-only PROVISIONAL parameter
-overrides by default. This mode does not change saved rule configuration or
-activation state. The optional saved-settings mode evaluates only active rules
-using their configured thresholds, so inactive rules show as not evaluated and
-configured UNSET customer types are reported as skipped. In both modes, the
-evaluation is restricted to fixture customers and transactions whose sender
-and receiver are both fixture-owned. R15 gets a demo-only synthetic
-confirmed-suspicious customer context; no alert history is created or changed
-to provide that context.
-
-The endpoint returns a detection run ID, counts, per-rule evaluation/signal
-counts and elapsed time, and scenario-level expected signal, observed score,
-evidence transaction numbers, and pass status. The Streamlit demo control
-renders this on the **Operations → Demo lab** page, alongside customer,
-account, and transaction inventory. The inventory remains visible after
-navigation and across reruns; the latest score/evidence remains visible for the
-current Streamlit session. In default
-mode, a signal is defined as a score of at least 0.50; the same observed signal
-is shown in saved-settings mode to help assess threshold changes. This is a
-visual monitoring aid, not proof that a rule is calibrated correctly. R13/R14
-use a deliberately small, sparse graph; use a separate larger performance
-dataset to study graph-search scaling.
-
-### Repeatability and scope
-
-Seeding repairs the stable fixture rows, updates their relative timestamps,
-and reactivates fixture-owned customers, accounts, and transactions. Legacy
-six-transaction demo rows are deactivated so they cannot affect the new
-scenarios. Seeding does not delete data. Do not reuse the `DEMO-*` identifiers
-for manually imported records; the seed owns those identifiers. The initial
-schema's legacy `demo-system` row is not used as a request actor.
-
-## 9. CSV upload and row-level errors
-
-The upload endpoint handles three entity types. Their template headers are
-defined in the Streamlit UI and required headers are checked in the API.
-
-### Processing steps
-
-1. Confirm that the filename ends in `.csv`.
-2. Read at most 5 MB plus one byte; reject files larger than 5 MB.
-3. Decode as UTF-8 (with an optional BOM).
-4. Parse the CSV in strict mode and check required headers.
-5. Reject uploads with more than 5,000 rows.
-6. Create an `upload_batch` record and get its generated ID.
-7. Parse each data row, using line 2 as the first CSV data row.
-8. Keep valid records for insertion; create `upload_row_error` records for
-   invalid rows.
-9. Insert accepted records, row errors, counts, and an audit event in one
-   database commit.
-10. After a transaction upload with accepted records, run the rules.
-11. Return counts plus any row errors in the response.
-
-### Validation by entity
-
-- **Customer:** requires a customer number and full name; limits text field
-  lengths; monthly income, when supplied, must be finite, nonnegative, and at
-  most two decimal places.
-- **Account:** requires an existing `customer_no`, account number, and a
-  three-letter currency code. The customer must be uploaded first.
-- **Transaction:** requires existing sender and receiver accounts; requires
-  positive finite amount with at most two decimal places; validates channel,
-  two-letter country code, three-letter currency, account/currency agreement,
-  and a timezone-naive ISO timestamp.
-- **All entity types:** reject missing IDs and duplicate IDs within the same
-  file or already in the database.
-
-If a row is invalid, the other individually valid rows may still be accepted.
-However, if a later database constraint rejects the accepted set during the
-commit, the database transaction rolls back the batch and accepted records
-together and the endpoint reports a failure. The row-level report is for
-validation errors the application can identify before insertion.
-
-Upload customers first, accounts second, and transactions last because foreign
-keys require referenced parent rows to exist.
-
-### Downloadable templates
-
-The UI includes small CSV templates for each entity. They demonstrate the
-expected headers and formats; a template row is illustrative and may conflict
-with existing demo IDs if uploaded unchanged.
-
-## 10. The Streamlit screens
-
-`frontend/app.py` configures `st.navigation` and runs the selected page from
-`frontend/app_pages/`. Each page is a separate script; shared HTTP behavior
-lives in `frontend/utils/api.py`, and reusable page elements live in
-`frontend/components/`.
-
-### Shared API helper
-
-`api_request` is the common HTTP wrapper. It:
-
-- joins `API_BASE_URL` with an API path;
-- passes query parameters, JSON bodies, or multipart files;
-- uses a 20-second timeout;
-- turns network/HTTP errors into readable `ApiError` messages; and
-- returns decoded JSON for successful responses.
-
-Individual screens catch `ApiError` and show the message with `st.error`.
-
-### Detection overview
-
-Requests `/dashboard/summary` for analyzed and suspicious transaction totals,
-alert status and severity distributions, daily detection counts for the last
-30 days, and rule trigger counts. It also displays the latest alerts. The
-“Evaluate rules now” button calls `POST /rules/evaluate` and refreshes the
-page.
-
-### Alert investigation
-
-The page sends status, severity, rule, and date filters to `GET /alerts`,
-fetches `GET /alerts/{id}` for associated transfers and analyst history, and
-can request `GET /customers/{customer_no}/transactions` for customer activity.
-Its form calls `PATCH /alerts/{id}/status`. The server enforces the note
-requirement for closing or confirming an alert and records notes even when the
-analyst keeps the current status.
-
-### Transaction analysis
-
-The page calls `GET /transactions` with date, customer, direction, and amount
-filters. It displays incoming/outgoing activity, daily transaction counts,
-transfers near the active R1 threshold, and alert-linked transactions. The
-account-flow diagram is hidden until an account or customer is selected. It
-then loads every matching transfer for that focus (including paginated results)
-and shows only links touching the selected entity; routes are grouped by
-account pair and currency. Curved bands connect originating accounts, transfer
-routes, and receiving accounts, with thickness indicating transfer count and
-alert-linked routes highlighted. Native hover tooltips show transfer totals
-and alert counts. Amount totals are grouped by currency; no exchange-rate
-conversion is inferred.
-
-### Data management
-
-The page selects an entity type, offers a template download, accepts a CSV,
-and submits it as a multipart upload. It shows accepted/rejected counts and row
-errors. The last batch ID is kept in Streamlit session state; the report
-lookup can fetch any entered batch ID.
-
-### Rule management
-
-The page fetches `GET /rules`, displays the selected rule's parameters using
-rule-specific widgets (including the R01/R03 windows and R01 amount bands), and
-submits them to `PUT /rules/{code}`. Analyst-owned policy questions appear as
-review notes beside the rule guide; provisional values remain editable. API
-validation is still required because clients can bypass the UI.
-
-### State and refresh behavior
-
-Streamlit widget values are rerun-driven. `st.session_state["last_upload_id"]`
-stores only the last upload ID for that browser session; the actual upload and
-report live in PostgreSQL. The app does not hold the authoritative alert/rule
-state in a client-side cache.
-
-## 11. Migrations and database setup
-
-### What Alembic is doing here
-
-An Alembic migration is a versioned Python script that moves a database from
-one known schema revision to another. `alembic_version` stores the currently
-applied revision. Future schema changes should be added as new migrations
-rather than editing an already-applied migration or rerunning the original SQL
-file.
-
-### Baseline migration
-
-`0001_existing_schema_baseline` supports both expected starting conditions:
-
-- If none of the project tables exist, it executes the original
-  `database/V1__initial_schema.sql`.
-- If all of the expected project tables already exist, it leaves them intact
-  and records the baseline revision.
-- If only some project tables exist, it stops with the names of missing tables
-  instead of guessing how to repair the database.
-
-The baseline also inserts the legacy `demo-system` row if absent. The RBAC
-migration maps existing string roles to `app_role`; new request actions use
-the authenticated user's ID. The subsequent rule-framework migration adds
-evaluation/result tables and seeds R01–R03; the latest migration seeds
-inactive, `UNSET` monitoring-rule rows for R04–R15.
-
-This initial migration is deliberately a **baseline**, not a sequence of
-fine-grained transformations from the old SQL schema. It cannot be safely
-downgraded because doing so could imply deleting data. `Base.metadata` in
-`alembic/env.py` is the metadata future migration/autogeneration work can
-inspect.
-
-### PostgreSQL driver normalization
-
-The installed dependency is `psycopg2-binary`. SQLAlchemy accepts URLs such as
-`postgresql://...`, but its default driver selection may choose a different
-driver. `normalize_database_url` explicitly changes PostgreSQL URLs to
-`postgresql+psycopg2://...`. It does not print or expose the credential values.
-
-## 12. Configuration and dependencies
-
-### `.env`
-
-`DATABASE_URL` tells SQLAlchemy and Alembic which database to use.
-`API_BASE_URL` tells Streamlit where FastAPI is running. `.env` is a local
-secret-bearing file and should not be committed or pasted into support
-messages. Set `JWT_SECRET` to a long random value; the API fails at startup if
-it is missing. `.env.example` contains placeholders, not working credentials.
-
-### Main dependencies
-
-- **FastAPI:** route definitions, request parsing, and HTTP responses.
-- **Uvicorn:** serves the ASGI FastAPI application.
-- **SQLAlchemy:** maps entities and builds database queries/sessions.
-- **Alembic:** applies versioned schema changes.
-- **psycopg2-binary:** PostgreSQL DBAPI driver used by SQLAlchemy.
-- **python-dotenv:** reads local environment settings from `.env`.
-- **Streamlit:** Python-rendered interactive screens.
-- **requests:** frontend-to-API HTTP calls.
-- **pandas:** tables and simple chart data preparation.
-
-There is no ORM or database connection from Streamlit directly to PostgreSQL.
-
-## 13. Tests and how to verify changes
-
-Run the test suite from the repository root:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest tests -q
+```text
+customer 1──* account 1──* transaction (as sender)
+                      1──* transaction (as receiver)
+customer 1──* alert *──* transaction        (alert_transaction)
+monitoring_rule 1──* alert
+detection_run 1──* rule_result *──* transaction   (rule_result_transaction)
+app_role *──* permission (role_permission);  app_user *──1 app_role
 ```
 
-They check:
+| Table | Holds |
+| --- | --- |
+| `customer`, `account`, `transaction` | Monitored data. Numbers are unique; amounts positive; channel and country formats checked. |
+| `monitoring_rule` | Code, name, active flag, weight, thresholds (JSONB). |
+| `detection_run`, `rule_result`, `rule_result_transaction` | Every run, every rule/customer result with its trace, and its evidence. |
+| `alert`, `alert_transaction` | Alerts (status, severity, score, deduplication key) and their evidence. |
+| `alert_status_history` | Every status change: who, when, from, to, note. |
+| `rule_change_log` | Old and new thresholds for every rule edit. |
+| `audit_log` | Every significant action (JSONB details). |
+| `upload_batch`, `upload_row_error` | Upload reports and rejected rows. |
+| `app_user`, `app_role`, `permission`, `role_permission` | Identity and RBAC. |
 
-- SQLAlchemy mapper relationships can be configured.
-- Known rule values pass threshold validation.
-- Invalid or ambiguous values are rejected.
-- Calendar-day rule/customer alert deduplication, severity thresholds, and
-  transaction evidence links are covered.
-- PostgreSQL URL formats are normalized to the installed driver.
-- RBAC route permissions, login audit events, identity attribution, and
-  alert-scoped customer history are checked without truncating append-only
-  audit/history tables.
+**Append-only:** database triggers reject `UPDATE` and `DELETE` on
+`audit_log`, `alert_status_history` and `rule_change_log`. These records must
+be kept for at least five years; nothing in the application deletes or
+archives them.
 
-These are **unit checks**, not proof of every database-backed workflow. A
-fuller manual smoke-test sequence with a local PostgreSQL database is:
+## 9. API reference
 
-1. `alembic upgrade head`
-2. Create an administrator with `python -m backend.scripts.create_admin` and
-   sign in through Streamlit. Set `ENABLE_DEMO_ENDPOINTS=true` before startup
-   if the smoke test should exercise demo seeding.
-3. Start the API and UI.
-4. Call `/health`.
-5. Click the demo seed button twice. The second result should report zero
-   newly created alerts.
-6. Check `/dashboard/summary`, `/alerts`, and `/rules`.
-7. Open an alert and inspect its related transactions.
-8. Try closing an alert without a note; expect HTTP 422.
-9. Close it with a note; verify the status history changes.
-10. Save a valid rule setting; fetch `/rules` to see the persisted value.
-11. Upload a valid CSV and one with deliberately invalid rows; inspect the
-    counts and `/uploads/{batch_id}` report.
+Live, always-current reference: `http://127.0.0.1:8000/docs`.
 
-Use the API docs at `/docs` to inspect exact request shapes and responses. For
-a UI issue, first check the browser page, then the API response, then backend
-logs; that sequence tells you which layer is responsible.
+**Conventions.** JSON in and out (except login: form; upload: multipart).
+Dates are ISO 8601 local time. Money and scores are strings (`"45000.00"`,
+`"0.8127"`) so no precision is lost. Paged lists return
+`{"total": n, "items": [...]}` with `offset` and `limit`. Errors return
+`{"detail": "<English text>"}`; the React app shows a Turkish translation, and
+a test fails if a backend message has none (`tests/test_error_translations.py`).
 
-The React interface has its own checks, run from `frontend-v2/`:
+| Endpoint | Permission | Purpose |
+| --- | --- | --- |
+| `POST /auth/login` | public | Get a token. |
+| `GET /auth/me` | signed in | Username, role, permissions. |
+| `GET /health` | public | API and database up? |
+| **Alerts** | | |
+| `GET /alerts/queue` | `alert:view` | Customer-grouped queue with summary counts. |
+| `GET /alerts` | `alert:view` | Alert list with filters; `include_counts=true` adds counts per status. |
+| `GET /alerts/rule-codes` | `alert:view` | Rule filter options. |
+| `GET /alerts/{id}` | `alert:view` | Detail, evidence, history with actors, escalated-by, explanation. |
+| `GET /alerts/{id}/customer-context` | `alert:view` (+ `alert:confirm` unless `new`) | Masked customer context; logs a view. |
+| `PATCH /alerts/{id}/status` | per transition | One alert decision. |
+| `POST /alerts/decisions` | per transition | Atomic decision on 1–50 alerts of one customer. |
+| `GET /dashboard/my-summary` | `alert:view` | The signed-in user's own counts and returned cases. |
+| **Dashboards** | | |
+| `GET /dashboard/summary?days=` | `dashboard:view` | Totals, distributions, daily trend. |
+| `GET /dashboard/funnel?days=` | `dashboard:view` | Where alerts went (created = closed + open + escalated). |
+| `GET /dashboard/rule-performance?days=` | `dashboard:view` | Per rule: evaluated, alerts, average score, hit rate. |
+| **Customers and transactions** | | |
+| `GET /customers`, `GET /customers/{no}`, `GET /accounts` | `customer:view` | Lists and profile; profile views are logged. |
+| `GET /transactions` | `customer:view` | Filtered transactions; logs views. |
+| `GET /transactions/summary` | `customer:view` | Totals, timeline and account-to-account routes computed in SQL. |
+| **Rules** | | |
+| `GET /rules` | `rule:view` | Rules with parameters, weight and metadata. |
+| `GET /rules/{code}/history` | `rule:view` | Saved changes: who, when, why, old → new per field. |
+| `PUT /rules/{code}` | `rule:edit` | Save parameters, weight, active flag; reason required. |
+| `POST /rules/evaluate` | `rule:edit` | Run active rules now. |
+| **Uploads** | | |
+| `POST /uploads?entity=` | `upload:create` | Upload a CSV (`customer`, `account`, `transaction`). |
+| `GET /uploads`, `GET /uploads/{id}` | `upload:view` | History and report; rejected row content only for the uploader. |
+| **Administration** | | |
+| `GET /users`, `GET /users/roles`, `POST /users`, `PATCH /users/{id}` | `user:manage` | User management. |
+| `GET /admin/system-overview` | `user:manage` | Health, schema revision, rule engine, volumes, security settings (numbers only). |
+| `GET /audit-log` | `audit:view` | Filtered audit events (`action`, `exclude_action`, actor, record, dates). The screen hides `customer.viewed` by default. |
+| **Demo** | | |
+| `GET /demo/status` | `dashboard:view` | Demo fixture inventory and scenarios. |
+| `POST /demo/seed` | `upload:create` + `ENABLE_DEMO_ENDPOINTS=true` | Seed the demo data and evaluate it (404 when disabled). |
+
+## 10. CSV upload
+
+Upload **customers first, then accounts, then transactions**: each refers to
+rows of the previous kind.
+
+1. The file must be `.csv`, UTF-8 (a BOM is fine), at most **5 MB** and
+   **5,000 rows**, with the required headers.
+2. Each row is validated on its own. Invalid rows are rejected with a row
+   number and reason; valid rows are accepted. Row numbering starts at 2 (row 1
+   is the header).
+3. Accepted rows, rejected rows, the batch counts and an audit entry are saved
+   in one transaction.
+4. After a transaction upload with accepted rows, the rules run automatically.
+
+| Entity | Main checks |
+| --- | --- |
+| Customer | Customer number and full name required; text lengths; income non-negative, max 2 decimals. |
+| Account | Existing customer; account number; 3-letter currency. |
+| Transaction | Existing sender and receiver accounts; positive amount (max 2 decimals); channel; 2-letter country; currency matching the accounts; ISO timestamp. |
+| All | No missing or duplicate IDs, in the file or in the database. |
+
+The **Veri yönetimi** screen offers templates, shows the result and lists past
+uploads.
+
+## 11. The demo lab
+
+`backend/demo.py` builds a repeatable synthetic fixture reserved under `DEMO-*`
+numbers: **32 customers, 32 TRY accounts and 93 transactions**, with **one
+scenario per rule (20)**. Each scenario names the target customer and the
+activity designed to trigger the rule.
+
+- **Default mode** evaluates every rule with demo-only `PROVISIONAL`
+  parameters. Saved rule settings and active flags are not touched.
+- **Saved-settings mode** uses the rules as configured; inactive rules show as
+  not evaluated.
+- Only demo customers and transactions between them are evaluated, so real
+  data is never affected. Seeding is repeatable: it repairs the fixture, moves
+  timestamps relative to now and never deletes anything.
+- A scenario passes when its score is ≥ 0.50. Signal-only S1 and S2 pass on
+  score alone; R18 targets the S1 customer, showing a signal turned into an
+  alert. R17 has no score, so it passes when its saved trace shows it raised
+  severity (open alerts from at least `min_rules` rules).
+- `DEMO-022` is the synthetic "confirmed suspicious" customer for R15; no real
+  alert history is created for it.
+
+Passing scenarios show that a rule can fire, not that its thresholds are
+right. The demo customers trigger many rules at once, so R18 alerts on most of
+them.
+
+## 12. The interfaces
+
+### React (`frontend-v2/`) — the primary interface
+
+| Screen | Path | Who |
+| --- | --- | --- |
+| Tespit özeti (overview: Özet / Alarm akışı / Kurallar tabs) | `/overview` | `dashboard:view` |
+| Alarm inceleme (queue) and alert detail | `/alerts`, `/alerts/:id` | `alert:view` |
+| Tüm alarmlar | `/all-alerts` | `alert:confirm` |
+| İşlem analizi | `/transactions` | `customer:view` |
+| Müşteriler and customer profile | `/customers`, `/customers/:no` | `customer:view` |
+| Veri yönetimi | `/data` | `upload:create` or `upload:view` |
+| Demo laboratuvarı | `/demo` | `dashboard:view` |
+| Kural yönetimi | `/rules` | `rule:view` (editing: `rule:edit`) |
+| Sistem özeti, Kullanıcı yönetimi | `/system`, `/users` | `user:manage` |
+| Denetim kaydı | `/audit` | `audit:view` |
+
+Code layout:
+
+- `src/features/<area>/` — one folder per screen: the page, its `api.ts`
+  (TanStack Query hooks) and its tests.
+- `src/api/client.ts` and `src/api/schemas/` — the HTTP client and the zod
+  schema of every response. When an API response changes, update its schema
+  in the same change.
+- `src/app/navigation.ts` — menu items and the permission each needs (route
+  guards use the same list).
+- `src/i18n/locales/tr.ts` and `en.ts` — all text. Turkish is the default;
+  English, light and dark themes are available.
+- `src/test/` — MSW request mocks and shared test data.
+
+Conventions: money stays a string and is summed in integer cents; dashboards
+are cached for 60 seconds and refreshed after a decision; overview tabs load
+only when opened.
+
+### Streamlit (`frontend/`) — legacy
+
+The original interface. It has **not** been updated for the current API: some
+pages call endpoints that were removed (for example the alert investigation
+page), and it does not know the compliance workflow. Keep it only for
+reference; new work goes into React.
+
+## 13. Database migrations
+
+Alembic records the applied revision in `alembic_version`. Never edit a
+migration that has been applied; add a new one. Every migration is mirrored as
+a SQL file in `database/`.
+
+| Revision | Mirror | What it does |
+| --- | --- | --- |
+| `0001_existing_schema_baseline` | `V1` | Creates the original schema on an empty database, or adopts an existing complete one. Stops if only some tables exist. |
+| `0002_rbac` | `V2` | Roles, permissions and `role_permission`; seeds admin and analyst. |
+| `0003_rule_framework` | `V3` | `detection_run`, `rule_result`, weights and scores; seeds R01–R03; deactivates legacy R1–R4. |
+| `0004_extended_detection_rules` | — | Seeds R04–R15 (inactive, `UNSET`). |
+| `0005_system_overview_metrics` | `V4` | Adds `account.created_at` and `detection_run.duration_ms` for the system overview. |
+| `0006_alert_workflow` | `V5` | Compliance role, `alert:escalate` and `alert:confirm`, K13 admin restriction; seeds R16, R17, R18, S1, S2. |
+| `0007_admin_all_permissions` | `V6` | **Development only:** the admin gets every permission again. |
+
+Common commands:
 
 ```powershell
-npm test            # unit, component, and accessibility tests (Vitest)
+.\.venv\Scripts\alembic.exe upgrade head      # apply everything
+.\.venv\Scripts\alembic.exe current           # what is applied
+.\.venv\Scripts\alembic.exe heads             # what the code expects
+```
+
+A database created by hand from the original SQL (no `alembic_version`): run
+`alembic stamp 0001_existing_schema_baseline`, then `alembic upgrade head`.
+
+## 14. Configuration
+
+Read from `.env` (or the process environment). Never commit `.env`.
+
+| Variable | Used by | Meaning |
+| --- | --- | --- |
+| `DATABASE_URL` | API, Alembic, integration tests | PostgreSQL URL, e.g. `postgresql+psycopg2://USER:PASSWORD@localhost:5432/izleme_alarm`. Required. |
+| `JWT_SECRET` | API | Token signing key; long and random. Required. |
+| `ENABLE_DEMO_ENDPOINTS` | API | `true` enables `POST /demo/seed`. Default `false`; development only. |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD` | `create_admin` | Optional; otherwise the script asks. |
+| `VITE_API_PROXY_TARGET` | React dev server | Where `/api` goes. Default `http://127.0.0.1:8000`. |
+| `API_UPSTREAM`, `PORT` | React container (nginx) | API address (default `http://backend:8000`) and port (default `8080`). |
+| `API_BASE_URL` | Streamlit | API address for the legacy interface. |
+
+Inside a container, `localhost` is the container itself. Use
+`host.docker.internal` to reach a database on the host.
+
+## 15. Testing
+
+```powershell
+# Backend (from the repository root)
+.\.venv\Scripts\python.exe -m pytest tests -q
+
+# React (from frontend-v2)
+npm test
 npm run typecheck
 npm run lint
 npm run build
 ```
 
-## 14. Limits and deliberate omissions
+- **Backend unit tests** (`tests/*.py`) need no database: rules and scoring,
+  parameter validation, route permissions, audit redaction, error
+  translations, the demo fixture.
+- **Integration tests** (`tests/integration/`) run against the database in
+  `DATABASE_URL`, each inside a transaction that is rolled back, so nothing
+  persists. They are skipped when `DATABASE_URL` is not set. **Point it at a
+  local test database, never at a shared or production one.** They cover the
+  workflow, four eyes, the queue, customer access and masking, dashboards,
+  rule history and the new rules end to end.
+- **React tests** use Vitest, Testing Library and MSW; unhandled requests fail
+  the test. Accessibility checks run with axe.
 
-These are important when explaining the project honestly:
+When something looks wrong in the interface, check in this order: the browser's
+network tab (the request and response), then `/docs` (call the API directly),
+then the API log. That shows which layer is at fault.
 
-- **The demo seed endpoint is disabled by default.** Set
-  `ENABLE_DEMO_ENDPOINTS=true` only in a development environment; the endpoint
-  still requires `upload:create`.
-- **RBAC is not a production identity platform.** There is no MFA, SSO,
-  password recovery, or deployment secrets-management plan.
-- **Rules are basic deterministic examples.** They are not validated financial
-  policy and may create false positives/negatives.
-- **R2 has a simple window interpretation.** It totals all matching inbound and
-  outbound transactions in the same account/currency window; it does not match
-  incoming/outgoing transfers individually.
-- **R3 uses the most recent N prior outgoing transactions.** It does not use a
-  statistical baseline, seasonal adjustment, or a configurable time horizon.
-- **R4 country codes are examples.** The demo's `TR` and `IL` settings are not
-  a statement that those countries are risky.
-- **No background scheduler or ML.** Rules run when a user triggers evaluation
-  or after transaction upload.
-- **No production upload pipeline.** There is a file/row limit and validation,
-  but no malware scan, asynchronous queue, or large-file streaming import.
-- **No production operations plan.** Backups, monitoring, secrets management,
-  database least privilege, retention, and deployment are not implemented.
-- **No committed default admin or password.** Create the first admin with
-  `python -m backend.scripts.create_admin`.
+## 16. How to change things
 
-## 15. Questions you should be able to answer
+**Add a rule.**
 
-### “How does the dashboard know the counts?”
+1. Create `backend/detection/rules/<code>_<name>.py` with a `RuleStrategy`
+   subclass: a `RuleDefinition` (code, name, steps, parameters, alert mode)
+   and `evaluate_raw`. The registry finds it automatically.
+2. Add its parameter model to `backend/detection/parameters.py`.
+3. Add a migration that inserts its `monitoring_rule` row (inactive, `UNSET`)
+   and a mirror SQL file. The engine refuses to run if a rule has no row.
+4. Add its fields to `frontend-v2/src/features/rules/model.ts` and its
+   summary sentence to the locale files.
+5. Add demo parameters and a scenario in `backend/demo.py`. A test fails if a
+   registered rule has no scenario.
 
-The UI calls `GET /dashboard/summary`. FastAPI runs database aggregate queries
-with `COUNT` and `GROUP BY`, returns JSON, and Streamlit renders metrics and
-charts. The dashboard does not calculate rule matches in the browser.
+**Add an endpoint.** Route in `backend/api/routes/` with
+`require_permission(...)` and a `response_model`; logic in a service; SQL in a
+repository. Add a permission case to `tests/test_rbac.py` (nothing checks this
+automatically), a Turkish translation for any new error text, a zod schema and
+a hook in React.
 
-### “How does the app decide a transaction is suspicious?”
+**Add a permission.** Add it in a migration, grant it to the right roles **and
+to admin** (see section 5), mirror it in `database/`, and add it to
+`frontend-v2/src/auth/permissions.ts`.
 
-The rule service loads active rules and active transactions, evaluates their
-threshold math, and constructs candidate alerts. It uses a unique
-deduplication key when inserting, so reevaluating the same transaction set does
-not create the same alert again.
+**Change an error message.** Change it in the backend and in `tr.ts`/`en.ts`
+together; the translation test enforces this.
 
-### “Where does an alert's evidence come from?”
+## 17. Limits and open items
 
-The `alert` row stores rule/customer/status/severity. The `alert_transaction`
-table links it to supporting transaction rows. The detail API loads both plus
-the append-only status history.
+- **Admin permissions:** K13 is suspended in development by migration `0007`
+  (section 5). Restore it before any real deployment.
+- **No scheduler:** rules run on upload, on demand and in the demo only.
+- **Provisional thresholds:** rule parameters are examples, not calibrated
+  policy. The hit-rate review mark ("Gözden geçir": below 10% over 30 days,
+  with at least 5 decided alerts) is a proposal awaiting the mentor's view.
+- **Currencies:** no exchange-rate conversion; income is assumed to be TRY
+  where a rule needs it.
+- **Graph rules (R13, R14)** may be slow on dense data; measured only on the
+  small demo graph.
+- **Growth:** `rule_result` gets one row per rule and customer per run; a
+  retention policy and extra indexes are needed at real volumes.
+- **Identity:** no MFA, SSO or password reset. Swagger (`/docs`) should be
+  closed or internal-only outside development.
+- **Uploads:** synchronous, with no malware scan or streaming import.
+- **No production operations:** backups, monitoring and secrets management are
+  out of scope.
+- **Not built on purpose:** rule simulation ("etkisini gör", decision K5) and
+  export of customer data from the screens.
 
-### “Why use SQLAlchemy if we already have SQL tables?”
+## 18. Glossary
 
-The tables are the database schema; SQLAlchemy gives Python typed classes and
-sessions to query/update those tables. It does not mean the schema disappears,
-and it does not automatically migrate the database.
-
-### “What does Alembic add?”
-
-It records which schema version is applied and gives future changes a
-repeatable, ordered migration path. The first migration adopts or creates the
-existing schema without dropping an existing complete schema.
-
-### “Why is Streamlit not connected directly to PostgreSQL?”
-
-The API is the single place for validation and business behavior. That avoids
-duplicating rule and persistence logic in the UI and makes the same behavior
-available to other clients later.
-
-### “What would change for ML?”
-
-First keep raw transaction data, labels/review outcomes, feature definitions,
-and evaluation timestamps well-structured. An ML model should be introduced as
-a separate scoring component with measured precision/recall and human review,
-not as an untested replacement for these transparent baseline rules. Model
-training and inference are not present today.
-
-## 16. Glossary
-
-- **Entity/model:** a Python class mapped to a database table.
-- **ORM:** object-relational mapper; translates between Python objects and
-  relational database rows.
-- **Session:** SQLAlchemy's unit of work for querying and committing changes.
-- **Migration:** a versioned change to a database schema.
-- **Foreign key:** a database constraint requiring a referenced row to exist.
-- **JSONB:** PostgreSQL's queryable JSON storage type; used for rule thresholds
-  and audit details.
-- **Deduplication key:** a stable unique identifier for one rule finding, used
-  to avoid inserting it more than once.
-- **Rolling window:** an interval measured from a transaction timestamp, not
-  fixed to a calendar hour.
-- **Append-only history:** records are added, not updated/deleted through
-  ordinary database operations; PostgreSQL triggers reject modifications.
-- **ASGI:** the Python server interface used by FastAPI and Uvicorn.
-
-## 17. Role-based access control
-
-### Roles and permissions
-
-Alembic revision `0002_rbac` creates the role, permission, and
-`role_permission` tables and migrates `app_user.role` to `app_user.role_id`.
-The seeded `admin` role has every permission. The seeded `analyst` role has
-only `alert:view`, `alert:update`, and `dashboard:view`. If the old schema
-contains auditor users, the migration preserves them as a legacy `auditor`
-role with no seeded permissions. No user rows are deleted.
-
-The permission codes are `user:manage`, `role:manage`, `upload:create`,
-`upload:view`, `rule:view`, `rule:edit`, `customer:view`, `alert:view`,
-`alert:update`, `dashboard:view`, and `audit:view`. User creation, deactivation,
-and role assignment require `user:manage`; `role:manage` is reserved for role
-administration and does not currently expose a role-editing endpoint.
-
-### Authentication and route enforcement
-
-`POST /auth/login` accepts the OAuth2 password form and returns a 30-minute
-HS256 bearer token. `GET /auth/me` reloads the user, role, and permissions from
-the database and returns the username, role code, and sorted permissions.
-Every API request using a protected route reloads the same authorization data;
-inactive users and roles are rejected. The only public routes are `POST
-/auth/login` and `GET /health`.
-
-Alerts and linked alert customer history require `alert:view`; the
-alert-history route derives its customer from the alert ID and does not accept
-a client-supplied customer ID. Generic transaction/customer history browsing
-requires `customer:view`, which analysts do not have. Other route permissions
-follow their action: rule reads use `rule:view`, edits/manual evaluation use
-`rule:edit`, uploads use `upload:create`, upload reports use `upload:view`,
-dashboard uses `dashboard:view`, and audit-log reads use `audit:view`.
-Automatic detection after an upload is attributed to the uploading user and
-does not require `rule:edit`. `ACCESS_DENIED`, `LOGIN_SUCCESS`, and
-`LOGIN_FAILED` audit entries are committed in an independent transaction;
-failed-login details contain the username but never the password.
-
-The Streamlit app stores the token and permission list in session state,
-attaches the bearer token to API calls, and builds navigation from permissions.
-This improves the UI but is not a substitute for API enforcement.
-
-### First administrator and existing databases
-
-Set `JWT_SECRET` in `.env` to a long random value; the API fails at startup if
-it is missing. After applying migrations, run
-`python -m backend.scripts.create_admin`. The script reads
-`ADMIN_USERNAME`/`ADMIN_PASSWORD` from the environment or prompts interactively.
-It stores only a bcrypt hash; no default credentials are committed.
-
-For a manually initialized database containing the complete original schema
-but no Alembic revision, adopt the original baseline and apply RBAC:
-
-```powershell
-.\.venv\Scripts\alembic.exe stamp 0001_existing_schema_baseline
-.\.venv\Scripts\alembic.exe upgrade head
-```
-
-Do not edit or stamp revision `0001` as the RBAC revision. The RBAC revision
-is `0002_rbac`. The demo seed endpoint is disabled unless
-`ENABLE_DEMO_ENDPOINTS=true` is explicitly set, and still requires
-`upload:create`.
-
-## 18. The React interface (frontend-v2)
-
-`frontend-v2/` is a second client of the same API. It has every Streamlit
-screen and does not change backend behaviour; Streamlit stays available.
-
-**How it talks to the API.** The browser only calls its own origin under
-`/api`. In development the Vite server forwards `/api/*` to FastAPI (stripping
-the prefix); in the container nginx does the same. The API therefore needs no
-CORS configuration. Every response is checked against a zod schema in
-`src/api/schemas/`, so a change in an API response shape shows up as a clear
-error instead of a silently broken screen. Python `Decimal` values arrive as
-JSON strings (`"45000.00"`); the UI keeps them as strings and sums money in
-integer cents, so amounts are never rounded through floating point.
-
-**Sessions and permissions.** Login posts the same form fields as Streamlit to
-`/auth/login`. The token is kept in memory and in `sessionStorage` (a refresh
-keeps the session; closing the tab ends it). The UI signs out when the
-30-minute token expires or any call returns 401. Navigation and route guards
-in `src/app/navigation.ts` mirror the Streamlit permission checks, but they are
-only a convenience: the API still enforces every permission, and a 403 is
-shown as a permission error.
-
-**Behaviour that differs from Streamlit, deliberately.**
-
-- The alert queue groups alerts by customer and sorts by severity, then alert
-  age. The API returns at most 200 alerts per request, so the queue loads in
-  pages of 200 and warns when groups are computed from a partial set.
-- Transaction analysis splits incoming/outgoing values only when a customer is
-  selected. Without one, every transfer would count on both sides, so the
-  screen shows one total per currency instead.
-- The legacy R1 near-threshold panel was dropped: migration 0003 deactivated
-  R1 and it has no editable implementation.
-- The account-movement diagram is a TypeScript port of
-  `frontend/components/transaction_flow.py`; its tests reproduce
-  `tests/test_transaction_flow.py`, and its ribbon geometry matches the Python
-  output exactly. It loads at most 20 pages (10,000 transfers) per selection.
-
-**Placeholders.** Where the design calls for data the API does not provide,
-the UI renders a dashed purple "Yer tutucu / Placeholder" marker rather than
-invented values. The full list is in `frontend-v2/README.md`.
+| Term | Meaning |
+| --- | --- |
+| Alert | A rule's finding about one customer, reviewed by people. |
+| Score `s` | A rule's result between 0 and 1; 0.5 or more opens an alert. |
+| `x`, `x_esik`, `x_kesin` | The rule's raw measurement; the value scoring 0.5; the value scoring 0.9. |
+| Signal-only rule | A rule that never alerts alone and only feeds R18 (S1, S2). |
+| Escalation (yükseltme) | The analyst sending an alert to compliance (`new` → `in_review`). |
+| Four eyes (dört göz) | The person who escalated cannot make the final decision. |
+| Detection run | One execution of the rules (`detection_run`), with a result per rule and customer (`rule_result`). |
+| Step trace | The stored, step-by-step calculation behind a result; it powers "Neden tetiklendi?". |
+| Hit rate (isabet) | confirmed ÷ (confirmed + closed) for a rule's alerts. |
+| Masking | Hiding part of personal data on the server (`Ö. Kılıç`, `…7781`). |
+| Append-only | Rows can be added but not changed or deleted; enforced by database triggers. |
+| `UNSET` / `PROVISIONAL` / `APPROVED` | A parameter set's status: not configured (skipped) / temporary / institution-approved. |
+| K1–K13 | Design decisions in the API design document (v0.6). |
+| MASAK, BDDK, KVKK | Turkey's financial crimes board, banking regulator, and personal data protection law. |

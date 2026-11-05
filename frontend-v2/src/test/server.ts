@@ -74,6 +74,8 @@ export const handlers = [
   http.get(`${API}/alerts`, () => HttpResponse.json(latestAlertsFixture)),
   http.get(`${API}/admin/system-overview`, () => HttpResponse.json(systemOverviewFixture)),
   http.get(`${API}/uploads`, () => HttpResponse.json([])),
+  // The rules screen reads the hit rate (E07); tests that care override this.
+  http.get(`${API}/dashboard/rule-performance`, () => HttpResponse.json([])),
 ];
 
 export const server = setupServer(...handlers);

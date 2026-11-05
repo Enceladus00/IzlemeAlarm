@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.api.dependencies import (
@@ -8,7 +8,7 @@ from backend.api.dependencies import (
     get_rule_service,
     require_permission,
 )
-from backend.api.responses import RuleView
+from backend.api.responses import RuleHistoryEntry, RuleView
 from backend.api_schemas import RuleUpdate
 from backend.services.detection_service import DetectionService
 from backend.services.rule_service import (
@@ -31,6 +31,21 @@ def list_rules(
         return service.list_rules()
     except SQLAlchemyError as exc:
         raise HTTPException(status_code=503, detail="Could not load rules.") from exc
+
+
+@router.get("/rules/{rule_code}/history", response_model=list[RuleHistoryEntry])
+def rule_history(
+    rule_code: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    _user: AuthenticatedUser = Depends(require_permission("rule:view")),
+    service: RuleService = Depends(get_rule_service),
+) -> Any:
+    try:
+        return service.rule_history(rule_code, limit)
+    except RuleNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="Could not load rule history.") from exc
 
 
 @router.put("/rules/{rule_code}", response_model=RuleView)

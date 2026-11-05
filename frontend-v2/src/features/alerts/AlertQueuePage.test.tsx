@@ -116,6 +116,17 @@ describe('Alert queue (K1: grouped on the server)', () => {
     expect(pageRequest().get('sort')).toBe('waiting');
   });
 
+  it('shows compliance who escalated, why, and how long the case has waited (E04)', async () => {
+    storeSession('mehmet.ozturk');
+    renderApp('/alerts');
+    await screen.findByText('Deniz Kurt');
+    expect(screen.getByText('ayse.karaca')).toBeInTheDocument();
+    expect(screen.getByText('Profil dışı giden işlem')).toBeInTheDocument();
+    expect(screen.getByText('Analistin notu:')).toBeInTheDocument();
+    // Escalated 6 days ago: over the 2-day mark, so it is highlighted.
+    expect(screen.getByText('6 gündür bekliyor')).toHaveClass('text-warning');
+  });
+
   it('validates a custom date range before requesting', async () => {
     storeSession('ayse.karaca');
     renderApp('/alerts?range=custom&from=2026-10-10&to=2026-10-01');

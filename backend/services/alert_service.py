@@ -69,6 +69,7 @@ class AlertService:
         date_to: date | None = None,
         offset: int = 0,
         limit: int = 50,
+        include_counts: bool = False,
     ) -> dict[str, Any]:
         if date_from and date_to and date_from > date_to:
             raise InvalidAlertUpdate("date_from must not be after date_to.")
@@ -82,7 +83,20 @@ class AlertService:
             offset=offset,
             limit=limit,
         )
-        return {"total": total, "items": [alert_summary(alert) for alert in alerts]}
+        page: dict[str, Any] = {"total": total, "items": [alert_summary(alert) for alert in alerts]}
+        if include_counts:
+            counts = self._repository.count_alerts_by_status(
+                severity=severity,
+                rule_code=rule_code,
+                customer_no=customer_no,
+                date_from=date_from,
+                date_to=date_to,
+            )
+            page["counts_by_status"] = {
+                status: counts.get(status, 0)
+                for status in ("new", "in_review", "closed", "confirmed_suspicious")
+            }
+        return page
 
     def alert_queue(
         self,
@@ -123,6 +137,9 @@ class AlertService:
             returned = (
                 row["last_old_status"] == "in_review" and row["last_new_status"] == "new"
             )
+            escalated = (
+                row["last_old_status"] == "new" and row["last_new_status"] == "in_review"
+            )
             items.append(
                 {
                     "customer_no": row["customer_no"],
@@ -139,6 +156,8 @@ class AlertService:
                     "last_event": last_event,
                     "returned_by": row["last_actor_name"] if returned else None,
                     "returned_note": row["last_note"] if returned else None,
+                    "escalated_by": row["last_actor_name"] if escalated else None,
+                    "escalation_note": row["last_note"] if escalated else None,
                 }
             )
         return {"summary": summary, "total": total, "items": items}

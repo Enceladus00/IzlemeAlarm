@@ -1,4 +1,4 @@
-import type { AlertStatus } from '@/api/schemas/alerts';
+import type { AlertDetail, AlertHistoryEvent, AlertStatus } from '@/api/schemas/alerts';
 import type { Permission, PermissionSet } from '@/auth/permissions';
 
 /**
@@ -33,4 +33,24 @@ export function availableTransitions(current: string, permissions: PermissionSet
 /** A user who can decide on escalated alerts but not escalate is a compliance officer. */
 export function isComplianceUser(permissions: PermissionSet): boolean {
   return permissions.has('alert:confirm') && !permissions.has('alert:escalate');
+}
+
+export type DecisionContextKind = 'escalated' | 'returned' | 'decided';
+
+/**
+ * The history event that explains where the alert stands now (E05/E11): the
+ * escalation it is waiting on, the return it came back with, or its final decision.
+ */
+export function decisionContext(
+  alert: Pick<AlertDetail, 'status' | 'history'>,
+): { kind: DecisionContextKind; event: AlertHistoryEvent } | null {
+  const latest = [...alert.history]
+    .filter((event) => event.old_status !== event.new_status)
+    .sort((a, b) => a.changed_at.localeCompare(b.changed_at))
+    .at(-1);
+  if (!latest || latest.new_status !== alert.status) return null;
+  if (alert.status === 'in_review' && latest.old_status === 'new') return { kind: 'escalated', event: latest };
+  if (alert.status === 'new' && latest.old_status === 'in_review') return { kind: 'returned', event: latest };
+  if (alert.status === 'closed' || alert.status === 'confirmed_suspicious') return { kind: 'decided', event: latest };
+  return null;
 }

@@ -74,6 +74,23 @@ class RuleService:
             for rule in self._repository.list_rules()
         ]
 
+    def rule_history(self, rule_code: str, limit: int = 50) -> list[dict[str, Any]]:
+        """E07 "Değişiklik geçmişi": each save as a list of changed fields
+        (old -> new) with who saved it and the stated reason."""
+        if self._repository.get_rule(rule_code) is None:
+            raise RuleNotFound("Rule not found.")
+        return [
+            {
+                "change_id": row["change_id"],
+                "changed_at": row["changed_at"],
+                "actor_name": row["actor_name"],
+                "actor_role": row["actor_role"],
+                "reason": (row["details"].get("reason") or None),
+                "changes": _diff_rule_change(row["details"]),
+            }
+            for row in self._repository.rule_history(rule_code, limit)
+        ]
+
     def update_rule(
         self,
         rule_code: str,
@@ -115,3 +132,42 @@ class RuleService:
             "weight": rule.weight,
             "thresholds": rule.thresholds,
         }
+
+
+def _diff_rule_change(details: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flatten one rule.updated audit record into the fields that changed.
+
+    field is "is_active", "weight", "<TYPE>.status" or "<TYPE>.<parameter>".
+    Older records without old_* values only report the threshold changes.
+    """
+    changes: list[dict[str, Any]] = []
+    if "old_is_active" in details and details.get("old_is_active") != details.get("new_is_active"):
+        changes.append(
+            {"field": "is_active", "old": details.get("old_is_active"), "new": details.get("new_is_active")}
+        )
+    if "old_weight" in details and _same_number(details.get("old_weight"), details.get("new_weight")) is False:
+        changes.append({"field": "weight", "old": details.get("old_weight"), "new": details.get("new_weight")})
+    old = details.get("old_thresholds") or {}
+    new = details.get("new_thresholds") or {}
+    for customer_type in sorted(set(old) | set(new)):
+        old_set = old.get(customer_type) or {}
+        new_set = new.get(customer_type) or {}
+        if old_set.get("status") != new_set.get("status"):
+            changes.append(
+                {"field": f"{customer_type}.status", "old": old_set.get("status"), "new": new_set.get("status")}
+            )
+        old_values = old_set.get("values") or {}
+        new_values = new_set.get("values") or {}
+        for name in sorted(set(old_values) | set(new_values)):
+            if old_values.get(name) != new_values.get(name):
+                changes.append(
+                    {"field": f"{customer_type}.{name}", "old": old_values.get(name), "new": new_values.get(name)}
+                )
+    return changes
+
+
+def _same_number(left: Any, right: Any) -> bool | None:
+    try:
+        return Decimal(str(left)) == Decimal(str(right))
+    except (ArithmeticError, ValueError):
+        return left == right

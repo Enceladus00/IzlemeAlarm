@@ -5,6 +5,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { formatNumber } from '@/utils/format';
 import { useFunnel, useRulePerformance } from './api';
+import { needsReview } from './review';
 
 function Skeleton() {
   return <div className="h-48 animate-pulse rounded-md bg-neutral-soft" aria-hidden />;
@@ -104,6 +105,11 @@ export function RulePerformanceTab({ days }: { days: number }) {
                 <td className="px-3 py-2 text-right tabular-nums">{fmt(row.closed)}</td>
                 <td className="px-3 py-2 text-right tabular-nums">
                   {row.hit_rate === null ? '—' : `%${formatNumber(row.hit_rate * 100, language, { maximumFractionDigits: 1 })}`}
+                  {needsReview(row) && (
+                    <Badge tone="danger" className="ml-2">
+                      {t('ruleReview.badge')}
+                    </Badge>
+                  )}
                 </td>
               </tr>
             ))}

@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from backend.models import AuditLog, MonitoringRule, RuleChangeLog
+from backend.models import AppRole, AppUser, AuditLog, MonitoringRule, RuleChangeLog
 
 
 class SqlAlchemyRuleRepository:
@@ -25,6 +25,38 @@ class SqlAlchemyRuleRepository:
                 MonitoringRule.rule_code == rule_code.upper()
             )
         )
+
+    def rule_history(self, rule_code: str, limit: int) -> list[dict[str, Any]]:
+        """E07: the rule's saved changes, newest first, from the audit log
+        (the only place that keeps the reason next to the old and new values)."""
+        rows = self._session.execute(
+            select(
+                AuditLog.audit_id,
+                AuditLog.created_at,
+                AuditLog.details,
+                AppUser.username,
+                AppRole.role_code,
+            )
+            .outerjoin(AppUser, AppUser.user_id == AuditLog.actor_id)
+            .outerjoin(AppRole, AppRole.role_id == AppUser.role_id)
+            .where(
+                AuditLog.action == "rule.updated",
+                AuditLog.entity_type == "monitoring_rule",
+                AuditLog.entity_id == rule_code.upper(),
+            )
+            .order_by(AuditLog.created_at.desc(), AuditLog.audit_id.desc())
+            .limit(limit)
+        ).all()
+        return [
+            {
+                "change_id": row.audit_id,
+                "changed_at": row.created_at,
+                "details": row.details or {},
+                "actor_name": row.username,
+                "actor_role": row.role_code,
+            }
+            for row in rows
+        ]
 
     def save_rule(
         self,

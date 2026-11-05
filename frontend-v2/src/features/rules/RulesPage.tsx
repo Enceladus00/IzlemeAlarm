@@ -19,7 +19,11 @@ import { PageHeader } from '@/components/ui/PageHeader';
 import { Select } from '@/components/ui/Select';
 import { PageSpinner } from '@/components/ui/Spinner';
 import { cn } from '@/utils/cn';
+import type { RulePerformance } from '@/api/schemas/dashboard';
+import { useRulePerformance } from '@/features/detection-overview/api';
+import { needsReview, REVIEW_PERIOD_DAYS } from '@/features/detection-overview/review';
 import { useRules, useUpdateRule } from './api';
+import { RuleHistoryCard, RulePerformanceSummary } from './RuleInsights';
 import { buildRuleUpdate, copyIndividualToCorporate, draftFromRule, type DraftErrors, type RuleDraft } from './model';
 import { ParameterFields } from './ParameterFields';
 import { useFieldErrorText } from './useFieldErrorText';
@@ -50,6 +54,13 @@ export default function RulesPage() {
 
   const sorted = useMemo(() => [...(rules.data ?? [])].sort((a, b) => compareRuleCodes(a.rule_code, b.rule_code)), [rules.data]);
   const selected = sorted.find((rule) => rule.rule_code === params.get('rule')) ?? sorted[0];
+  // E07: hit rate per rule (needs dashboard:view; the page works without it).
+  const { can } = useAuth();
+  const performance = useRulePerformance(REVIEW_PERIOD_DAYS, can('dashboard:view'));
+  const performanceByCode = useMemo(
+    () => new Map((performance.data ?? []).map((row) => [row.rule_code, row])),
+    [performance.data],
+  );
 
   const header = <PageHeader breadcrumb={t('rules.breadcrumb')} title={t('nav.rules')} description={t('rules.description')} />;
   if (rules.isPending) return <PageSpinner label={t('common.loading')} />;
@@ -81,25 +92,40 @@ export default function RulesPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
         <Card className="h-fit p-2 lg:sticky lg:top-6">
           <nav aria-label={t('rules.listLabel')}>
-            <RuleList rules={registered} selected={selected.rule_code} onSelect={selectRule} />
+            <RuleList rules={registered} selected={selected.rule_code} onSelect={selectRule} performance={performanceByCode} />
             {legacy.length > 0 && (
               <>
                 <p className="mt-3 mb-1 px-3 text-[11px] font-medium tracking-wide text-muted uppercase">{t('rules.legacy')}</p>
-                <RuleList rules={legacy} selected={selected.rule_code} onSelect={selectRule} />
+                <RuleList rules={legacy} selected={selected.rule_code} onSelect={selectRule} performance={performanceByCode} />
               </>
             )}
           </nav>
         </Card>
         {/* Re-mount on rule change or fresh server data so the draft starts from saved values. */}
-        <div ref={editorRef} className="min-w-0 scroll-mt-16">
-          <RuleEditor key={`${selected.rule_code}-${rules.dataUpdatedAt}`} rule={selected} />
+        <div ref={editorRef} className="min-w-0 scroll-mt-16 space-y-4">
+          <RuleEditor
+            key={`${selected.rule_code}-${rules.dataUpdatedAt}`}
+            rule={selected}
+            performance={performanceByCode.get(selected.rule_code)}
+          />
+          <RuleHistoryCard key={selected.rule_code} code={selected.rule_code} />
         </div>
       </div>
     </>
   );
 }
 
-function RuleList({ rules, selected, onSelect }: { rules: Rule[]; selected: string; onSelect: (code: string) => void }) {
+function RuleList({
+  rules,
+  selected,
+  onSelect,
+  performance,
+}: {
+  rules: Rule[];
+  selected: string;
+  onSelect: (code: string) => void;
+  performance: Map<string, RulePerformance[number]>;
+}) {
   const { t } = useTranslation();
   return (
     <ul className="space-y-0.5">
@@ -119,6 +145,11 @@ function RuleList({ rules, selected, onSelect }: { rules: Rule[]; selected: stri
               <span className="w-9 shrink-0 font-mono font-semibold">{rule.rule_code}</span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate">{rule.name}</span>
+                {performance.get(rule.rule_code) && needsReview(performance.get(rule.rule_code)!) && (
+                  <span className="mt-1 inline-block rounded bg-danger-soft px-1 text-[10px] font-semibold text-danger">
+                    {t('ruleReview.badge')}
+                  </span>
+                )}
                 {rule.metadata && (
                   <span className="mt-1 flex gap-1">
                     {CUSTOMER_TYPES.map((type) => {
@@ -153,7 +184,7 @@ function RuleList({ rules, selected, onSelect }: { rules: Rule[]; selected: stri
   );
 }
 
-function RuleEditor({ rule }: { rule: Rule }) {
+function RuleEditor({ rule, performance }: { rule: Rule; performance?: RulePerformance[number] }) {
   const { t } = useTranslation();
   const { can } = useAuth();
   const canEdit = can('rule:edit');
@@ -196,6 +227,7 @@ function RuleEditor({ rule }: { rule: Rule }) {
       <Card className="space-y-4 p-5">
         <RuleHeading rule={rule} />
         {!canEdit && <InlineAlert tone="info">{t('rules.readOnlyNotice')}</InlineAlert>}
+        {performance && <RulePerformanceSummary row={performance} />}
 
         <div className="rounded-md border border-border">
           <button

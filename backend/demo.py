@@ -13,8 +13,13 @@ from backend.models import Account, Customer, MonitoringRule, Transaction
 NEW_RULE_WEIGHTS = {
     "R01": Decimal("1.000"),
     "R02": Decimal("0.450"),
-    **{f"R{number:02d}": Decimal("1.000") for number in range(3, 16)},
+    **{f"R{number:02d}": Decimal("1.000") for number in range(3, 19)},
+    "S1": Decimal("1.000"),
+    "S2": Decimal("1.000"),
 }
+# DEMO-001 .. DEMO-032; DEMO-022 is the synthetic confirmed-suspicious customer (R15).
+DEMO_CUSTOMER_COUNT = 32
+DEMO_SUSPICIOUS_INDEX = 22
 UNSET_THRESHOLDS = {
     "BIREYSEL": {"status": "UNSET", "values": {}},
     "KURUMSAL": {"status": "UNSET", "values": {}},
@@ -158,6 +163,43 @@ DEMO_RULE_OVERRIDES = {
             "cash_accounts": [],
         }
     ),
+    "R16": _demo_parameter_set(
+        {
+            "countries": ["IR", "KP"],
+            "limits": {"TRY": "5000"},
+            "window_days": 7,
+            "x_esik": "0",
+            "x_kesin": "0.7",
+        }
+    ),
+    "S1": _demo_parameter_set(
+        {
+            "limits": {"TRY": "2000"},
+            "round_unit": "1000",
+            "min_count": 3,
+            "window_days": 7,
+            "x_esik": "0.5",
+            "x_kesin": "0.9",
+        }
+    ),
+    "S2": _demo_parameter_set(
+        {
+            "window_days": 7,
+            "mad_floor": "0.25",
+            "cash_accounts": [],
+            "x_esik": "1",
+            "x_kesin": "2",
+        }
+    ),
+    "R17": _demo_parameter_set(
+        {
+            "window_days": 7,
+            "min_rules": 2,
+            "excluded_rules": ["R02", "R17", "R18"],
+            "open_statuses": ["new", "in_review"],
+        }
+    ),
+    "R18": _demo_parameter_set({"p": "4", "alert_threshold": "0.5"}),
 }
 
 
@@ -252,13 +294,53 @@ DEMO_SCENARIOS = (
         "DEMO-ACC-024",
         "Two-hop contact with the synthetic confirmed-suspicious customer.",
     ),
+    (
+        "R16",
+        "DEMO-025",
+        "DEMO-ACC-025",
+        "Incoming and outgoing transfers with a listed country (IR).",
+    ),
+    (
+        "S1",
+        "DEMO-026",
+        "DEMO-ACC-026",
+        "Every big outgoing transfer is a round amount (signal only).",
+    ),
+    (
+        "S2",
+        "DEMO-027",
+        "DEMO-ACC-027",
+        "Hub account with far more counterparties than its peers (signal only).",
+    ),
+    (
+        "R17",
+        "DEMO-001",
+        "DEMO-ACC-001",
+        "Open alerts from several different rules raise the alerts' severity.",
+    ),
+    (
+        "R18",
+        "DEMO-026",
+        "DEMO-ACC-026",
+        "Combined score includes the signal-only S1 result and opens an alert.",
+    ),
 )
 
 
-def _scenario_transactions(
-    as_of: datetime,
-) -> list[tuple[str, int, int, str, datetime, str]]:
-    specs: list[tuple[str, int, int, str, datetime, str]] = []
+def expected_signal(rule_code: str) -> str:
+    """What the coverage table checks for a scenario."""
+    if rule_code == "R17":
+        min_rules = DEMO_RULE_OVERRIDES["R17"]["KURUMSAL"]["values"]["min_rules"]
+        return f"K >= {min_rules} rules"
+    return "score >= 0.50"
+
+
+ScenarioTransaction = tuple[str, int, int, str, datetime, str, str]
+
+
+def _scenario_transactions(as_of: datetime) -> list[ScenarioTransaction]:
+    """(transaction_no, sender index, receiver index, amount, time, channel, country)."""
+    specs: list[ScenarioTransaction] = []
 
     def add(
         transaction_no: str,
@@ -267,8 +349,9 @@ def _scenario_transactions(
         amount: str,
         at: datetime,
         channel: str = "internet",
+        country: str = "TR",
     ) -> None:
-        specs.append((transaction_no, sender, receiver, amount, at, channel))
+        specs.append((transaction_no, sender, receiver, amount, at, channel, country))
 
     def recent(days: int = 0, hours: int = 0, minutes: int = 0) -> datetime:
         return as_of - timedelta(days=days, hours=hours, minutes=minutes)
@@ -352,6 +435,32 @@ def _scenario_transactions(
 
     add("D-R15-001", 24, 23, "2000", recent(days=2))
     add("D-R15-002", 23, 22, "2000", recent(days=1))
+
+    # R16: transfers with a listed country (counterparty DEMO-028 abroad).
+    add("D-R16-001", 28, 25, "6000", recent(days=3), country="IR")
+    add("D-R16-002", 25, 28, "6000", recent(days=1), country="IR")
+
+    # S1 (signal only) -> R18: big outgoing transfers that are all round amounts.
+    for suffix, amount, days in (
+        ("001", "2000", 4),
+        ("002", "3000", 3),
+        ("003", "4000", 2),
+        ("004", "5000", 1),
+    ):
+        add(f"D-S1-{suffix}", 26, 28, amount, recent(days=days))
+
+    # S2 (signal only): a hub account with many distinct counterparties.
+    for suffix, other, amount, incoming in (
+        ("001", 29, "700", True),
+        ("002", 30, "850", True),
+        ("003", 31, "400", False),
+        ("004", 32, "1300", False),
+        ("005", 25, "250", False),
+        ("006", 26, "1900", False),
+        ("007", 28, "550", False),
+    ):
+        sender, receiver = (other, 27) if incoming else (27, other)
+        add(f"D-S2-{suffix}", sender, receiver, amount, recent(days=2, hours=int(suffix)))
     return specs
 
 
@@ -381,7 +490,9 @@ def seed_demo_data(
             )
     db.flush()
 
-    customer_numbers = [f"DEMO-{index:03d}" for index in range(1, 25)]
+    customer_numbers = [
+        f"DEMO-{index:03d}" for index in range(1, DEMO_CUSTOMER_COUNT + 1)
+    ]
     customers_by_number = {
         customer.customer_no: customer
         for customer in db.scalars(
@@ -410,7 +521,9 @@ def seed_demo_data(
         customers.append(customer)
     db.flush()
 
-    account_numbers = [f"DEMO-ACC-{index:03d}" for index in range(1, 25)]
+    account_numbers = [
+        f"DEMO-ACC-{index:03d}" for index in range(1, DEMO_CUSTOMER_COUNT + 1)
+    ]
     accounts_by_number = {
         account.account_no: account
         for account in db.scalars(
@@ -469,7 +582,7 @@ def seed_demo_data(
             )
         )
     }
-    for number, sender, receiver, amount, tx_time, channel in transaction_specs:
+    for number, sender, receiver, amount, tx_time, channel, country in transaction_specs:
         transaction = transactions_by_number.get(number)
         if transaction is None:
             transaction = Transaction(transaction_no=number)
@@ -480,7 +593,7 @@ def seed_demo_data(
         transaction.currency = "TRY"
         transaction.tx_time = tx_time
         transaction.channel = channel
-        transaction.country_code = "TR"
+        transaction.country_code = country
         transaction.is_active = True
 
     db.flush()
@@ -492,7 +605,7 @@ def seed_demo_data(
             "account_no": account_no,
             "customer_id": customers_by_number[customer_no].customer_id,
             "intent": intent,
-            "expected_signal": "score >= 0.50",
+            "expected_signal": expected_signal(rule_code),
         }
         for rule_code, customer_no, account_no, intent in DEMO_SCENARIOS
     ]
@@ -502,6 +615,8 @@ def seed_demo_data(
         "transactions": len(transaction_specs),
         "rules": len(NEW_RULE_WEIGHTS),
         "demo_customer_ids": [customer.customer_id for customer in customers],
-        "demo_suspicious_customer_ids": [customers[21].customer_id],
+        "demo_suspicious_customer_ids": [
+            customers[DEMO_SUSPICIOUS_INDEX - 1].customer_id
+        ],
         "scenarios": scenario_targets,
     }

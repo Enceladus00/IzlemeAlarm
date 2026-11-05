@@ -98,6 +98,8 @@ export function alertsHandler(dataset: AlertSummary[] = queueAlerts, returned: R
           last_event: null,
           returned_by: returned[first.customer_no] ?? null,
           returned_note: returned[first.customer_no] ? 'Eksik belge' : null,
+          escalated_by: status === 'in_review' ? 'ayse.karaca' : null,
+          escalation_note: status === 'in_review' ? 'Profil dışı giden işlem' : null,
         };
       });
       items.sort(

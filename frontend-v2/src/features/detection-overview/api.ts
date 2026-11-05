@@ -38,8 +38,9 @@ export function useFunnel(days: number) {
 }
 
 /** GET /dashboard/rule-performance — loaded only when the "Kurallar" tab is open. */
-export function useRulePerformance(days: number) {
+export function useRulePerformance(days: number, enabled = true) {
   return useQuery({
+    enabled,
     queryKey: dashboardKeys.rulePerformance(days),
     queryFn: ({ signal }) =>
       apiRequest('/dashboard/rule-performance', { query: { days }, schema: rulePerformanceSchema, signal }),

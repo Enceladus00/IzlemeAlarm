@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/api/client';
-import { demoRunSchema, demoStatusSchema, type DemoRun } from '@/api/schemas/demo';
+import { demoRunSchema, demoStatusSchema, type DemoRun, type DemoStatus } from '@/api/schemas/demo';
 
 export const demoKeys = {
   status: ['demo', 'status'] as const,
@@ -34,7 +34,12 @@ export function useSeedDemo() {
       apiRequest('/demo/seed', { method: 'POST', query: { use_saved_rules: useSavedRules }, schema: demoRunSchema }),
     onSuccess: (run) => {
       queryClient.setQueryData(demoKeys.lastRun, run);
-      queryClient.setQueryData(demoKeys.status, run);
+      // The seed response has no `seed_enabled`; keep the flag from the status query
+      // so the page doesn't flip to the "disabled" banner after a successful seed.
+      queryClient.setQueryData<DemoStatus>(demoKeys.status, (previous) => ({
+        ...run,
+        seed_enabled: run.seed_enabled ?? previous?.seed_enabled ?? true,
+      }));
       for (const key of ['dashboard', 'alerts', 'transactions', 'admin']) {
         void queryClient.invalidateQueries({ queryKey: [key] });
       }
