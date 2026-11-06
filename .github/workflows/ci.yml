@@ -1,59 +1,60 @@
 name: CI
 
+# Runs the tests on every push and pull request. It never touches AWS, except:
+# on main, when the repository variable AUTO_DEPLOY is "true" and the push
+# changed something the backend depends on, the last job hands over to
+# deploy.yml. With AUTO_DEPLOY "false" (or unset) that job is always skipped.
+# Switch: gh variable set AUTO_DEPLOY --body true   (or false)
 on:
-  pull_request:
   push:
-    branches-ignore: [main] # main is tested by deploy.yml before it deploys
-  workflow_call:
+  pull_request:
 
 permissions:
   contents: read
 
-jobs:
-  backend:
-    name: Backend tests
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: izleme_alarm_ci
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s --health-timeout 5s --health-retries 10
-    env:
-      # Throwaway database on localhost, so the integration tests run too.
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/izleme_alarm_ci
-      JWT_SECRET: ci-only-secret-that-is-long-enough-for-tests
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12" # same as Dockerfile.backend
-          cache: pip
-          cache-dependency-path: backend/requirements.txt
-      - run: pip install -r backend/requirements.txt
-      - name: Migrate the empty CI database
-        run: alembic upgrade head
-      - run: python -m pytest tests -q
+concurrency:
+  group: ci-${{ github.ref }}
+  # A newer push replaces an older test run on a branch; never interrupt main,
+  # whose run may be deploying.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-  frontend:
-    name: Frontend checks
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  # Did this push to main touch the backend?
+  changes:
+    name: Detect backend changes
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AUTO_DEPLOY == 'true'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend-v2
+    outputs:
+      backend: ${{ steps.diff.outputs.backend }}
+    env:
+      # Anything that ends up in the backend image or the production schema.
+      BACKEND_PATHS: '^(backend/|alembic/|alembic\.ini$|database/|Dockerfile\.backend$)'
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-node@v5
         with:
-          node-version: 22 # same as Dockerfile.frontend-v2
-          cache: npm
-          cache-dependency-path: frontend-v2/package-lock.json
-      - run: npm ci
-      - run: npx tsc -b
-      - run: npm run lint
-      - run: npx vitest run
+          fetch-depth: 0
+      - id: diff
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # A first push has no "before" commit: treat it as a backend change.
+          if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+          echo "Changed files:"; echo "$changed"
+          if echo "$changed" | grep -qE "$BACKEND_PATHS"; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  auto-deploy:
+    name: Auto-deploy (AUTO_DEPLOY=true only)
+    needs: [tests, changes]
+    if: needs.changes.outputs.backend == 'true'
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit
