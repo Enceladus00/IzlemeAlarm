@@ -1,0 +1,112 @@
+name: Deploy backend
+
+# Every push to main: run CI, then build the backend image, push it to ECR,
+# migrate the production database and roll the ECS Express service onto the image.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # manual re-run from the Actions tab
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false # never stop a deploy halfway
+
+env:
+  AWS_REGION: eu-north-1
+  AWS_ACCOUNT_ID: "299362456172"
+  ECR_REPOSITORY: izlemealarm-backend
+  ECS_CLUSTER: default
+  ECS_SERVICE: izlemealarm-backend
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Build and deploy
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # The AWS Organization's SCP blocks GitHub OIDC providers, so a dedicated
+      # least-privilege IAM user (github-izlemealarm-deploy) is used instead.
+      # Its keys are secrets of the "production" environment, visible only to this job.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: image
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+        run: |
+          docker build -f Dockerfile.backend -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      # The schema must be at the new code's revision before new tasks start.
+      # Migrations are additive, so the old tasks keep working meanwhile.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Migrate production database
+        run: |
+          # Same SSM parameter the ECS task reads, so the URL lives in one place.
+          DATABASE_URL=$(aws ssm get-parameter --name /izlemealarm-backend/DATABASE_URL --with-decryption --query Parameter.Value --output text)
+          echo "::add-mask::$DATABASE_URL"
+          export DATABASE_URL
+          pip install -r backend/requirements.txt
+          alembic upgrade head
+
+      # Every setting is passed explicitly: the action does not document whether
+      # omitted values keep their current setting or fall back to Express defaults
+      # (port 80, health check /ping).
+      - name: Deploy to ECS Express
+        uses: aws-actions/amazon-ecs-deploy-express-service@v1
+        with:
+          cluster: ${{ env.ECS_CLUSTER }}
+          service-name: ${{ env.ECS_SERVICE }}
+          image: ${{ steps.image.outputs.uri }}
+          execution-role-arn: ${{ vars.ECS_EXECUTION_ROLE_ARN }}
+          infrastructure-role-arn: ${{ vars.ECS_INFRASTRUCTURE_ROLE_ARN }}
+          container-port: 8000
+          cpu: 256
+          memory: 512
+          health-check-path: ${{ vars.HEALTH_CHECK_PATH }}
+          subnets: ${{ vars.ECS_SUBNETS }}
+          security-groups: ${{ vars.ECS_SECURITY_GROUPS }}
+          log-group: /aws/ecs/default/izlemealarm-backend-1a93
+          log-stream-prefix: ecs
+          min-task-count: 1
+          max-task-count: 1
+          auto-scaling-metric: REQUEST_COUNT_PER_TARGET
+          auto-scaling-target-value: 1
+          environment-variables: |
+            [
+              {"name": "PORT", "value": "8000"},
+              {"name": "ENABLE_DEMO_ENDPOINTS", "value": "${{ vars.ENABLE_DEMO_ENDPOINTS }}"}
+            ]
+          secrets: |
+            [
+              {"name": "DATABASE_URL", "valueFrom": "arn:aws:ssm:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:parameter/izlemealarm-backend/DATABASE_URL"},
+              {"name": "JWT_SECRET", "valueFrom": "arn:aws:ssm:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:parameter/izlemealarm-backend/JWT_SECRET"}
+            ]
+
+      - name: Smoke test
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 10 "${{ vars.SERVICE_URL }}/health"
