@@ -1,6 +1,6 @@
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from backend.models import AppRole, AppUser, AuditLog
 
@@ -35,6 +35,7 @@ class SqlAlchemyUserRepository:
             self._session.scalars(
                 select(AppRole)
                 .where(AppRole.is_active)
+                .options(selectinload(AppRole.permissions))
                 .order_by(AppRole.role_code)
             )
         )

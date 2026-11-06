@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from datetime import datetime
+
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from backend.models import Account, Alert, Customer, Transaction
@@ -121,6 +123,77 @@ class SqlAlchemyCustomerRepository:
             base.order_by(Account.account_no).offset(filters.offset).limit(filters.limit)
         ).all()
         return total, [(row[0], row[1]) for row in rows]
+
+    def customer_analysis(
+        self, customer_id: int, since: datetime, until: datetime, history_since: datetime
+    ) -> dict[str, Any]:
+        """E12: monthly in/out per currency and counterparties in [since, until).
+
+        Transfers between the customer's own accounts are left out. A counterparty
+        is new when it had no transaction with the customer in [history_since, since).
+        """
+        params = {"cid": customer_id, "since": since, "until": until, "history_since": history_since}
+        monthly = self._session.execute(
+            text(
+                """
+                WITH own AS (SELECT account_id FROM account WHERE customer_id = :cid),
+                tx AS (
+                    SELECT t.tx_time, t.currency, t.amount,
+                           t.receiver_account_id IN (SELECT account_id FROM own) AS to_me,
+                           t.sender_account_id IN (SELECT account_id FROM own) AS from_me
+                    FROM transaction t
+                    WHERE t.is_active AND t.tx_time >= :since AND t.tx_time < :until
+                      AND (t.sender_account_id IN (SELECT account_id FROM own)
+                           OR t.receiver_account_id IN (SELECT account_id FROM own))
+                )
+                SELECT date_trunc('month', tx_time)::date AS month, currency,
+                       COALESCE(SUM(amount) FILTER (WHERE to_me AND NOT from_me), 0) AS incoming,
+                       COALESCE(SUM(amount) FILTER (WHERE from_me AND NOT to_me), 0) AS outgoing
+                FROM tx GROUP BY 1, 2 ORDER BY 1, 2
+                """
+            ),
+            params,
+        ).mappings().all()
+        counterparties = self._session.execute(
+            text(
+                """
+                WITH own AS (SELECT account_id FROM account WHERE customer_id = :cid),
+                flows AS (
+                    SELECT 'in' AS direction, t.sender_account_id AS other_id, t.currency, t.amount
+                    FROM transaction t
+                    WHERE t.is_active AND t.tx_time >= :since AND t.tx_time < :until
+                      AND t.receiver_account_id IN (SELECT account_id FROM own)
+                      AND t.sender_account_id NOT IN (SELECT account_id FROM own)
+                    UNION ALL
+                    SELECT 'out', t.receiver_account_id, t.currency, t.amount
+                    FROM transaction t
+                    WHERE t.is_active AND t.tx_time >= :since AND t.tx_time < :until
+                      AND t.sender_account_id IN (SELECT account_id FROM own)
+                      AND t.receiver_account_id NOT IN (SELECT account_id FROM own)
+                )
+                SELECT f.direction, a.account_no, c.customer_no, c.full_name AS customer_name,
+                       f.currency, COUNT(*) AS count, SUM(f.amount) AS amount,
+                       NOT EXISTS (
+                           SELECT 1 FROM transaction h
+                           WHERE h.is_active AND h.tx_time >= :history_since AND h.tx_time < :since
+                             AND ((h.sender_account_id = f.other_id
+                                   AND h.receiver_account_id IN (SELECT account_id FROM own))
+                               OR (h.receiver_account_id = f.other_id
+                                   AND h.sender_account_id IN (SELECT account_id FROM own)))
+                       ) AS is_new
+                FROM flows f
+                JOIN account a ON a.account_id = f.other_id
+                JOIN customer c ON c.customer_id = a.customer_id
+                GROUP BY f.direction, f.other_id, a.account_no, c.customer_no, c.full_name, f.currency
+                ORDER BY f.direction, SUM(f.amount) DESC, a.account_no
+                """
+            ),
+            params,
+        ).mappings().all()
+        return {
+            "monthly": [dict(row) for row in monthly],
+            "counterparties": [dict(row) for row in counterparties],
+        }
 
     def log_customer_views(self, actor_id: int, customer_nos: list[str], source: str) -> None:
         log_customer_views(self._session, actor_id, customer_nos, source)

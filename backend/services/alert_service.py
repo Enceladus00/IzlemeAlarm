@@ -183,11 +183,26 @@ class AlertService:
             if row["rule_code"] not in case["rule_codes"]:
                 case["rule_codes"].append(row["rule_code"])
             case["alert_ids"].append(row["alert_id"])
+        counts = {key: int(value or 0) for key, value in data["counts"].items()}
+        escalations = {key: int(value or 0) for key, value in data["escalations"].items()}
         return {
-            "decided_today": int(data["counts"]["decided_today"] or 0),
-            "escalated_today": int(data["counts"]["escalated_today"] or 0),
+            "decided_today": counts["decided_today"],
+            "escalated_today": counts["escalated_today"],
             "returned_to_me": len(data["returned"]),
             "returned_cases": list(cases.values()),
+            # E08 "Panelim"
+            "queue_pending": counts["queue_pending"],
+            "queue_high": counts["queue_high"],
+            "closed_today": counts["closed_today"],
+            "escalated_today_confirmed": escalations["escalated_today_confirmed"],
+            "escalations_30d": escalations["escalations_30d"],
+            "escalation_outcome_30d": {
+                "confirmed": escalations["confirmed"],
+                "closed": escalations["closed"],
+                "returned": escalations["returned"],
+                "pending": escalations["pending"],
+            },
+            "decisions_today": data["decisions"],
         }
 
     def list_rule_codes(self) -> list[str]:

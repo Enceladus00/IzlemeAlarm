@@ -75,10 +75,22 @@ class AnalysisService:
     def funnel(self, days: int) -> dict[str, Any]:
         since = datetime.combine(date.today() - timedelta(days=days - 1), time.min)
         row = self._repository.funnel_data(since)
+        average = row.pop("avg_decision_days", None)
         result = {key: int(value or 0) for key, value in row.items()}
+        decided_escalations = result["confirmed"] + result["escalated_closed"]
         return {
             "days": days,
             "created": result["created"],
+            "open": result["open"],
+            "confirmed": result["confirmed"],
+            # E10 KPIs; null when there is nothing to divide by.
+            "escalation_rate": round(result["escalated"] / result["created"], 3)
+            if result["created"]
+            else None,
+            "confirmed_rate": round(result["confirmed"] / decided_escalations, 3)
+            if decided_escalations
+            else None,
+            "avg_decision_days": round(float(average), 1) if average is not None else None,
             "analyst_closed": result["analyst_closed"],
             "analyst_open": result["analyst_open"],
             "escalated": result["escalated"],

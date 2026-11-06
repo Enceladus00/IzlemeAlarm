@@ -116,9 +116,16 @@ describe('Rule management', () => {
     server.use(http.get(`${API}/auth/me`, () => HttpResponse.json({ username: 'viewer', role_code: 'auditor', permissions: ['rule:view'] })));
     storeSession('mehmet.ozturk');
     renderApp('/rules?rule=R02');
-    expect(await screen.findByText('Kural ayarları hesabınız için salt okunur.')).toBeInTheDocument();
-    expect(screen.getByLabelText('Para birimi 1')).toBeDisabled();
+    expect(await screen.findByText('Salt okunur')).toBeInTheDocument();
+    // E09: no form at all — a sentence from the current parameters and examples instead.
+    expect(screen.queryByLabelText('Para birimi 1')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Kural ayarlarını kaydet' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('rule-sentence-BIREYSEL')).toHaveTextContent('Tek bir işlemin tutarı limitin (50.000 TRY) veya üzerindeyse alarm açar.');
+    const individual = screen.getByRole('region', { name: 'Bu kural ne yapar? · Bireysel' });
+    expect(within(individual).getByText('60.000 TRY tutarında tek işlem.')).toBeInTheDocument();
+    expect(within(individual).getByText(/45.000 TRY tutarında işlem/)).toBeInTheDocument();
+    const corporate = screen.getByRole('region', { name: 'Bu kural ne yapar? · Kurumsal' });
+    expect(within(corporate).getByText(/parametreler henüz girilmedi/)).toBeInTheDocument();
   });
 
   it('shows legacy rules as read-only stored thresholds', async () => {

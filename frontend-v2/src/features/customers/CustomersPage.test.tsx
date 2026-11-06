@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
-import type { CustomerListItem, CustomerProfile } from '@/api/schemas/customers';
+import type { CustomerAnalysis, CustomerListItem, CustomerProfile } from '@/api/schemas/customers';
 import { alertsHandler } from '@/test/alertData';
 import { renderApp, storeSession } from '@/test/render';
 import { API, server } from '@/test/server';
@@ -30,13 +30,52 @@ const profile: CustomerProfile = {
   alerts: { open: 3, total: 4, by_status: { new: 3, closed: 1 } },
 };
 
+/** E12 example from the guide: 121.850 / 28.000 = 4,4 × monthly income. */
+function analysisFor(days: number, exceeded = true): CustomerAnalysis {
+  return {
+    customer_no: 'C-1042',
+    days,
+    date_from: '2026-08-09',
+    date_to: '2026-11-06',
+    monthly: [
+      { month: '2026-10', currency: 'TRY', incoming: '40000.00', outgoing: '35000.00' },
+      { month: '2026-11', currency: 'TRY', incoming: '121850.00', outgoing: '9000.00' },
+      { month: '2026-11', currency: 'USD', incoming: '500.00', outgoing: '0.00' },
+    ],
+    income_check: {
+      monthly_income: '28000.00',
+      currency: 'TRY',
+      peak_month: '2026-11',
+      peak_direction: 'incoming',
+      peak_amount: '121850.00',
+      ratio: exceeded ? '4.4' : '1.4',
+      threshold: '3',
+      exceeded,
+    },
+    counterparties: {
+      incoming: [
+        { account_no: 'TR11', customer_no: 'C-9', customer_name: 'Yeni Gönderen', currency: 'TRY', count: 3, amount: '100000.00', is_new: true },
+        { account_no: 'TR12', customer_no: 'C-8', customer_name: 'Eski Tanıdık', currency: 'TRY', count: 5, amount: '21850.00', is_new: false },
+      ],
+      outgoing: [],
+    },
+  };
+}
+
+const analysisRequests: URLSearchParams[] = [];
 const customerRequests: URLSearchParams[] = [];
 const accountRequests: URLSearchParams[] = [];
 
 beforeEach(() => {
   customerRequests.length = 0;
   accountRequests.length = 0;
+  analysisRequests.length = 0;
   server.use(
+    http.get(`${API}/customers/C-1042/analysis`, ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      analysisRequests.push(params);
+      return HttpResponse.json(analysisFor(Number(params.get('days'))));
+    }),
     ...alertsHandler(),
     http.get(`${API}/customers`, ({ request }) => {
       const params = new URL(request.url).searchParams;
@@ -107,6 +146,33 @@ describe('Customers', () => {
       '/transactions?customer=C-1042&focus=account%3ATR000000000000000000004410',
     );
     expect(await screen.findByRole('link', { name: /#5518/ })).toBeInTheDocument();
+  });
+
+  it('analyses the customer: income warning, monthly bars and new counterparties (E12)', async () => {
+    storeSession('mehmet.ozturk');
+    const { user } = renderApp('/customers/C-1042');
+    const section = await screen.findByRole('region', { name: 'Müşteri ve işlem analizi' });
+    expect(await within(section).findByText(/121\.850,00 TRY, beyan edilen aylık gelirin \(28\.000,00 TRY\) 4,4 katı/)).toBeInTheDocument();
+    expect(within(section).getAllByTestId('month-group')).toHaveLength(2); // TRY first, USD not mixed in
+    const senders = within(section).getByRole('table', { name: 'Para gönderenler' });
+    const rows = within(senders).getAllByRole('row').slice(1);
+    expect(within(rows[0]!).getByText('YENİ')).toBeInTheDocument();
+    expect(within(rows[1]!).queryByText('YENİ')).not.toBeInTheDocument();
+    expect(within(rows[0]!).getByText('%82')).toBeInTheDocument();
+    expect(within(section).getByText('Bu dönemde karşı taraf yok.')).toBeInTheDocument();
+    expect(analysisRequests[0]!.get('days')).toBe('90');
+
+    await user.selectOptions(within(section).getByLabelText('Dönem'), '30');
+    await waitFor(() => expect(analysisRequests.map((params) => params.get('days'))).toContain('30'));
+  });
+
+  it('shows no income warning below the threshold', async () => {
+    server.use(http.get(`${API}/customers/C-1042/analysis`, () => HttpResponse.json(analysisFor(90, false))));
+    storeSession('mehmet.ozturk');
+    renderApp('/customers/C-1042');
+    const section = await screen.findByRole('region', { name: 'Müşteri ve işlem analizi' });
+    await within(section).findByRole('table', { name: 'Para gönderenler' });
+    expect(within(section).queryByText('Gelirle uyumsuz hacim')).not.toBeInTheDocument();
   });
 
   it('shows a not-found state', async () => {

@@ -267,11 +267,30 @@ class ReturnedCase(BaseModel):
     note: str | None
 
 
+class MyDecision(BaseModel):
+    alert_id: int
+    customer_no: str
+    customer_name: str
+    rule_code: str
+    severity: str
+    old_status: str | None
+    new_status: str
+    changed_at: datetime
+    note: str | None
+
+
 class MySummary(BaseModel):
     decided_today: int
     escalated_today: int
     returned_to_me: int
     returned_cases: list[ReturnedCase]
+    queue_pending: int
+    queue_high: int
+    closed_today: int
+    escalated_today_confirmed: int
+    escalations_30d: int
+    escalation_outcome_30d: "EscalationOutcome"
+    decisions_today: list[MyDecision]
 
 
 # --- Dashboards (K3) ----------------------------------------------------------
@@ -303,9 +322,18 @@ class EscalationOutcome(BaseModel):
     pending: int
 
 
+# MySummary (above) refers to EscalationOutcome.
+MySummary.model_rebuild()
+
+
 class DashboardFunnel(BaseModel):
     days: int
     created: int
+    open: int
+    confirmed: int
+    escalation_rate: float | None
+    confirmed_rate: float | None
+    avg_decision_days: float | None
     analyst_closed: int
     analyst_open: int
     escalated: int
@@ -521,6 +549,49 @@ class CustomerProfileView(BaseModel):
     created_at: datetime | None
     accounts: list[CustomerAccount]
     alerts: CustomerAlertCounts
+
+
+class MonthlyFlow(BaseModel):
+    month: str
+    currency: str
+    incoming: Decimal
+    outgoing: Decimal
+
+
+class IncomeCheck(BaseModel):
+    monthly_income: Decimal | None
+    currency: str
+    peak_month: str | None
+    peak_direction: Literal["incoming", "outgoing"] | None
+    peak_amount: Decimal | None
+    ratio: Decimal | None
+    threshold: Decimal
+    exceeded: bool
+
+
+class Counterparty(BaseModel):
+    account_no: str
+    customer_no: str
+    customer_name: str
+    currency: str
+    count: int
+    amount: Decimal
+    is_new: bool
+
+
+class CounterpartyFlows(BaseModel):
+    incoming: list[Counterparty]
+    outgoing: list[Counterparty]
+
+
+class CustomerAnalysis(BaseModel):
+    customer_no: str
+    days: int
+    date_from: date
+    date_to: date
+    monthly: list[MonthlyFlow]
+    income_check: IncomeCheck
+    counterparties: CounterpartyFlows
 
 
 class AccountListItem(BaseModel):

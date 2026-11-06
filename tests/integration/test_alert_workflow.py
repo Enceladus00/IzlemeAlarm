@@ -284,5 +284,44 @@ def test_my_summary_counts_only_my_work(client, users, factory):
     assert case["returned_by"] == users["compliance"]["username"]
     assert case["note"] == "Eksik belge"
     other = client.get("/dashboard/my-summary", headers=users["analyst2"]["headers"]).json()
-    assert other == {"decided_today": 0, "escalated_today": 0, "returned_to_me": 0, "returned_cases": []}
+    assert {key: other[key] for key in ("decided_today", "escalated_today", "returned_to_me", "returned_cases")} == {
+        "decided_today": 0, "escalated_today": 0, "returned_to_me": 0, "returned_cases": []
+    }
+    assert other["escalations_30d"] == 0 and other["decisions_today"] == []
     assert client.get("/dashboard/my-summary", headers=users["admin"]["headers"]).json()["decided_today"] == 0
+
+
+def test_my_summary_panel_fields(client, users, factory, session):
+    from sqlalchemy import func, select
+
+    from backend.models import Alert
+
+    customer = factory.customer()
+    confirmed = factory.alert(customer, rule_code="R06", severity="high")
+    returned = factory.alert(customer, rule_code="R07")
+    closed = factory.alert(customer, rule_code="R01")
+    factory.commit()
+    analyst = users["analyst"]["headers"]
+    compliance = users["compliance"]["headers"]
+    client.post(
+        "/alerts/decisions",
+        json={"alert_ids": [confirmed.alert_id, returned.alert_id], "status": "in_review", "note": "n"},
+        headers=analyst,
+    )
+    client.patch(f"/alerts/{closed.alert_id}/status", json={"status": "closed", "note": "olağan"}, headers=analyst)
+    client.patch(f"/alerts/{confirmed.alert_id}/status", json={"status": "confirmed_suspicious", "note": "evet"}, headers=compliance)
+    client.patch(f"/alerts/{returned.alert_id}/status", json={"status": "new", "note": "eksik"}, headers=compliance)
+
+    mine = client.get("/dashboard/my-summary", headers=analyst).json()
+    outcome = mine["escalation_outcome_30d"]
+    assert mine["escalations_30d"] == 2
+    assert outcome == {"confirmed": 1, "closed": 0, "returned": 1, "pending": 0}
+    assert sum(outcome.values()) == mine["escalations_30d"]
+    assert mine["escalated_today_confirmed"] == 1
+    assert mine["closed_today"] == 1
+    assert mine["queue_pending"] == session.scalar(select(func.count()).select_from(Alert).where(Alert.status == "new"))
+    assert mine["queue_high"] <= mine["queue_pending"]
+    decisions = mine["decisions_today"]
+    assert sorted(row["alert_id"] for row in decisions) == sorted([closed.alert_id, returned.alert_id, confirmed.alert_id])
+    assert {row["new_status"] for row in decisions} == {"in_review", "closed"}
+    assert all(row["customer_no"] == customer.customer_no for row in decisions)

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.api.dependencies import get_customer_service, require_permission
-from backend.api.responses import AccountPage, CustomerPage, CustomerProfileView
+from backend.api.responses import AccountPage, CustomerAnalysis, CustomerPage, CustomerProfileView
 from backend.repositories.customer_repository import AccountFilters, CustomerFilters
 from backend.repositories.customer_view_log import CustomerViewLogFailed
 from backend.services.auth_service import AuthenticatedUser
@@ -45,6 +45,34 @@ def get_customer(
 ) -> Any:
     try:
         return service.get_customer(customer_no, user.user_id)
+    except CustomerNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CustomerViewLogFailed as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="Could not load customers.") from exc
+
+
+ANALYSIS_PERIODS = (30, 90, 180)
+
+
+def analysis_days(days: int = Query(default=90)) -> int:
+    """E12 period selector: 30, 90 or 180 days."""
+    if days not in ANALYSIS_PERIODS:
+        raise HTTPException(status_code=422, detail="days must be 30, 90 or 180.")
+    return days
+
+
+@router.get("/customers/{customer_no}/analysis", response_model=CustomerAnalysis)
+def customer_analysis(
+    customer_no: str,
+    days: int = Depends(analysis_days),
+    user: AuthenticatedUser = Depends(require_permission("customer:view")),
+    service: CustomerService = Depends(get_customer_service),
+) -> Any:
+    """E12: monthly in/out, income check and counterparties (logged as a customer view)."""
+    try:
+        return service.analysis(customer_no, days, user.user_id)
     except CustomerNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except CustomerViewLogFailed as exc:

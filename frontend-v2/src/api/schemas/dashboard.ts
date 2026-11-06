@@ -82,6 +82,27 @@ export const mySummarySchema = z.object({
       note: z.string().nullable(),
     }),
   ),
+  /** E08 "Panelim": queue = the shared analyst queue (status new). */
+  queue_pending: z.number(),
+  queue_high: z.number(),
+  closed_today: z.number(),
+  escalated_today_confirmed: z.number(),
+  escalations_30d: z.number(),
+  /** Current status of the alerts I escalated in the last 30 days; sums to escalations_30d. */
+  escalation_outcome_30d: z.object({ confirmed: z.number(), closed: z.number(), returned: z.number(), pending: z.number() }),
+  decisions_today: z.array(
+    z.object({
+      alert_id: z.number(),
+      customer_no: z.string(),
+      customer_name: z.string(),
+      rule_code: z.string(),
+      severity: z.enum(['low', 'medium', 'high']),
+      old_status: z.string().nullable(),
+      new_status: z.string(),
+      changed_at: z.string(),
+      note: z.string().nullable(),
+    }),
+  ),
 });
 export type MySummary = z.infer<typeof mySummarySchema>;
 
@@ -89,6 +110,12 @@ export type MySummary = z.infer<typeof mySummarySchema>;
 export const dashboardFunnelSchema = z.object({
   days: z.number(),
   created: z.number(),
+  /** E10 KPIs: open = status new or in_review; rates 0–1, null when nothing to divide. */
+  open: z.number(),
+  confirmed: z.number(),
+  escalation_rate: z.number().nullable(),
+  confirmed_rate: z.number().nullable(),
+  avg_decision_days: z.number().nullable(),
   analyst_closed: z.number(),
   analyst_open: z.number(),
   escalated: z.number(),

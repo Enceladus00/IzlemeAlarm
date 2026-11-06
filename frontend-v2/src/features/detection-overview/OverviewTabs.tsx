@@ -3,8 +3,10 @@ import { Badge } from '@/components/ui/Badge';
 import { Card, CardHeader } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
+import { StatCard } from '@/components/ui/StatCard';
 import { formatNumber } from '@/utils/format';
-import { useFunnel, useRulePerformance } from './api';
+import { useDashboardSummary, useFunnel, useRulePerformance } from './api';
+import { DailyAlertBars } from './DailyAlertBars';
 import { needsReview } from './review';
 
 function Skeleton() {
@@ -28,33 +30,86 @@ function Bar({ label, value, total, tone }: { label: string; value: number; tota
 
 /** K3 tab 2: where did the period's alerts go? Counts only, no customer data. */
 export function FunnelTab({ days }: { days: number }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n.resolvedLanguage ?? 'tr';
   const funnel = useFunnel(days);
+  // Daily counts come from the summary (usually already cached from the first tab).
+  const summary = useDashboardSummary(days);
   if (funnel.isError) return <ErrorState error={funnel.error} onRetry={() => void funnel.refetch()} />;
   if (!funnel.data) return <Skeleton />;
   const data = funnel.data;
   const outcome = data.escalation_outcome;
   if (data.created === 0) return <EmptyState title={t('overviewTabs.funnelEmpty', { days })} />;
+  const percent = (value: number | null) =>
+    value === null ? t('overviewTabs.noValue') : formatNumber(value, language, { style: 'percent', maximumFractionDigits: 1 });
+  const decided = outcome.confirmed + outcome.closed;
   return (
-    <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-      <Card>
-        <CardHeader title={t('overviewTabs.funnelTitle', { days })} description={t('overviewTabs.funnelHint')} />
-        <div className="space-y-3 px-5 pb-5">
-          <Bar label={t('overviewTabs.created')} value={data.created} total={data.created} tone="var(--series-1)" />
-          <Bar label={t('overviewTabs.analystClosed')} value={data.analyst_closed} total={data.created} tone="var(--status-neutral)" />
-          <Bar label={t('overviewTabs.analystOpen')} value={data.analyst_open} total={data.created} tone="var(--series-2)" />
-          <Bar label={t('overviewTabs.escalated')} value={data.escalated} total={data.created} tone="var(--status-serious)" />
-        </div>
-      </Card>
-      <Card>
-        <CardHeader title={t('overviewTabs.outcomeTitle')} description={t('overviewTabs.outcomeHint')} />
-        <div className="space-y-3 px-5 pb-5">
-          <Bar label={t('overviewTabs.confirmed')} value={outcome.confirmed} total={data.escalated} tone="var(--status-critical)" />
-          <Bar label={t('overviewTabs.closed')} value={outcome.closed} total={data.escalated} tone="var(--status-neutral)" />
-          <Bar label={t('overviewTabs.returned')} value={outcome.returned} total={data.escalated} tone="var(--series-2)" />
-          <Bar label={t('overviewTabs.pending')} value={outcome.pending} total={data.escalated} tone="var(--status-serious)" />
-        </div>
-      </Card>
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard label={t('overviewTabs.kpiCreated')} value={formatNumber(data.created, language)} />
+        <StatCard label={t('overviewTabs.kpiOpen')} value={formatNumber(data.open, language)} caption={t('overviewTabs.kpiOpenHint')} />
+        <StatCard
+          label={t('overviewTabs.kpiEscalationRate')}
+          value={percent(data.escalation_rate)}
+          caption={t('overviewTabs.kpiEscalationHint', { count: data.escalated })}
+        />
+        <StatCard
+          label={t('overviewTabs.kpiDecisionDays')}
+          value={
+            data.avg_decision_days === null
+              ? t('overviewTabs.noValue')
+              : t('overviewTabs.kpiDecisionValue', { value: formatNumber(data.avg_decision_days, language, { maximumFractionDigits: 1 }) })
+          }
+          caption={t('overviewTabs.kpiDecisionHint')}
+        />
+      </div>
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+        <Card className="xl:col-span-2">
+          <CardHeader title={t('overviewTabs.dailyTitle', { days })} description={t('overviewTabs.dailyHint')} />
+          <div className="px-5 pb-5">
+            {summary.isError ? (
+              <ErrorState error={summary.error} onRetry={() => void summary.refetch()} />
+            ) : summary.data ? (
+              <DailyAlertBars days={days} rows={summary.data.trends.map((row) => ({ date: row.date, count: row.alerts }))} />
+            ) : (
+              <Skeleton />
+            )}
+          </div>
+        </Card>
+        <Card>
+          <CardHeader title={t('overviewTabs.accuracyTitle')} description={t('overviewTabs.accuracyHint')} />
+          <div className="px-5 pb-5" data-testid="escalation-accuracy">
+            {decided === 0 ? (
+              <p className="text-[13px] text-muted">{t('overviewTabs.accuracyEmpty')}</p>
+            ) : (
+              <>
+                <p className="text-3xl font-bold tabular-nums">{percent(data.confirmed_rate)}</p>
+                <p className="mt-1 text-[13px] text-muted">{t('overviewTabs.accuracyDetail', { confirmed: outcome.confirmed, decided })}</p>
+              </>
+            )}
+          </div>
+        </Card>
+      </div>
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <Card>
+          <CardHeader title={t('overviewTabs.funnelTitle', { days })} description={t('overviewTabs.funnelHint')} />
+          <div className="space-y-3 px-5 pb-5">
+            <Bar label={t('overviewTabs.created')} value={data.created} total={data.created} tone="var(--series-1)" />
+            <Bar label={t('overviewTabs.analystClosed')} value={data.analyst_closed} total={data.created} tone="var(--status-neutral)" />
+            <Bar label={t('overviewTabs.analystOpen')} value={data.analyst_open} total={data.created} tone="var(--series-2)" />
+            <Bar label={t('overviewTabs.escalated')} value={data.escalated} total={data.created} tone="var(--status-serious)" />
+          </div>
+        </Card>
+        <Card>
+          <CardHeader title={t('overviewTabs.outcomeTitle')} description={t('overviewTabs.outcomeHint')} />
+          <div className="space-y-3 px-5 pb-5">
+            <Bar label={t('overviewTabs.confirmed')} value={outcome.confirmed} total={data.escalated} tone="var(--status-critical)" />
+            <Bar label={t('overviewTabs.closed')} value={outcome.closed} total={data.escalated} tone="var(--status-neutral)" />
+            <Bar label={t('overviewTabs.returned')} value={outcome.returned} total={data.escalated} tone="var(--series-2)" />
+            <Bar label={t('overviewTabs.pending')} value={outcome.pending} total={data.escalated} tone="var(--status-serious)" />
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }

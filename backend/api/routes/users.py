@@ -57,7 +57,7 @@ def create_user(
 def list_roles(
     _actor: AuthenticatedUser = Depends(require_permission("user:manage")),
     service: UserService = Depends(get_user_service),
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     return service.list_roles()
 
 

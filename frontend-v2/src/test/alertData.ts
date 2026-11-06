@@ -149,6 +149,16 @@ export function alertsHandler(dataset: AlertSummary[] = queueAlerts, returned: R
           returned_at: daysAgo(0),
           note: 'Eksik belge',
         })),
+        queue_pending: dataset.filter((alert) => alert.status === 'new').length,
+        queue_high: dataset.filter((alert) => alert.status === 'new' && alert.severity === 'high').length,
+        closed_today: 2,
+        escalated_today_confirmed: 1,
+        escalations_30d: 7,
+        escalation_outcome_30d: { confirmed: 3, closed: 2, returned: 1, pending: 1 },
+        decisions_today: [
+          { alert_id: 1, customer_no: 'C-1001', customer_name: 'Ayşe Yılmaz', rule_code: 'R01', severity: 'high', old_status: 'new', new_status: 'in_review', changed_at: daysAgo(0), note: 'Uyuma gönderildi' },
+          { alert_id: 2, customer_no: 'C-1002', customer_name: 'Mert Kaya', rule_code: 'R05', severity: 'low', old_status: 'new', new_status: 'closed', changed_at: daysAgo(0), note: 'Maaş ödemesi' },
+        ],
       }),
     ),
   ];

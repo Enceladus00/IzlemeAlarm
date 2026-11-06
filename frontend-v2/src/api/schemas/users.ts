@@ -12,7 +12,10 @@ export const userSchema = z.object({
 export type User = z.infer<typeof userSchema>;
 export const usersSchema = z.array(userSchema);
 
-export const rolesSchema = z.array(z.object({ role_code: z.string(), name: z.string() }));
+/** user_service.py::list_roles — permission codes sorted (E14 role cards). */
+export const rolesSchema = z.array(
+  z.object({ role_code: z.string(), name: z.string(), permissions: z.array(z.string()).default([]) }),
+);
 export type Role = z.infer<typeof rolesSchema>[number];
 
 /** Limits from api_schemas.py and security.py (bcrypt accepts at most 72 bytes). */

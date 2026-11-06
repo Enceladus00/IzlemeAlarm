@@ -59,7 +59,7 @@ describe('authentication', () => {
   it('restores a session after refresh and signs out on request', async () => {
     storeSession('admin');
     const { user, router } = renderApp('/');
-    await waitFor(() => expect(router.state.location.pathname).toBe('/overview'));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/my-panel'));
 
     await user.click(screen.getAllByRole('button', { name: 'Oturumu kapat' })[0]!);
     expect(await screen.findByText('Oturumunuz kapatıldı.')).toBeInTheDocument();

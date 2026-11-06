@@ -15,6 +15,7 @@ const SystemOverview = lazy(() => import('@/features/system-overview/SystemOverv
 const AlertQueue = lazy(() => import('@/features/alerts/AlertQueuePage'));
 const AlertDetail = lazy(() => import('@/features/alerts/AlertDetailPage'));
 const AllAlerts = lazy(() => import('@/features/alerts/AllAlertsPage'));
+const MyPanel = lazy(() => import('@/features/alerts/MyPanelPage'));
 const Customers = lazy(() => import('@/features/customers/CustomersPage'));
 const CustomerDetail = lazy(() => import('@/features/customers/CustomerDetailPage'));
 const TransactionAnalysis = lazy(() => import('@/features/transactions/TransactionAnalysisPage'));
@@ -28,6 +29,7 @@ const AuditLog = lazy(() => import('@/features/audit/AuditLogPage'));
  * Screen implementations by navigation id.
  */
 const PAGES: Record<NavId, PageComponent> = {
+  myPanel: MyPanel,
   detectionOverview: DetectionOverview,
   alerts: AlertQueue,
   allAlerts: AllAlerts,

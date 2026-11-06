@@ -32,9 +32,13 @@ class UserService:
     def list_users(self) -> list[dict[str, Any]]:
         return [self._user_view(user) for user in self._repository.list_users()]
 
-    def list_roles(self) -> list[dict[str, str]]:
+    def list_roles(self) -> list[dict[str, Any]]:
         return [
-            {"role_code": role.role_code, "name": role.name}
+            {
+                "role_code": role.role_code,
+                "name": role.name,
+                "permissions": sorted(permission.code for permission in role.permissions),
+            }
             for role in self._repository.list_active_roles()
         ]
 

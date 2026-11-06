@@ -8,6 +8,7 @@ import {
   History,
   LayoutDashboard,
   SlidersHorizontal,
+  UserRound,
   Upload,
   Users,
   type LucideIcon,
@@ -17,6 +18,7 @@ import type { Translation } from '@/i18n/locales/tr';
 
 export type NavSection = keyof Translation['nav']['sections'];
 export type NavId =
+  | 'myPanel'
   | 'detectionOverview'
   | 'alerts'
   | 'allAlerts'
@@ -45,6 +47,8 @@ export interface NavItem {
  * usability aid: every endpoint enforces its own permission on the server.
  */
 export const NAV_ITEMS: readonly NavItem[] = [
+  // E08: the analyst's own day; first so analysts land here.
+  { id: 'myPanel', path: '/my-panel', section: 'monitoring', icon: UserRound, anyOf: ['alert:escalate'] },
   { id: 'detectionOverview', path: '/overview', section: 'monitoring', icon: LayoutDashboard, anyOf: ['dashboard:view'] },
   { id: 'alerts', path: '/alerts', section: 'monitoring', icon: BellRing, anyOf: ['alert:view'], editPermission: ['alert:update', 'alert:escalate', 'alert:confirm'] },
   // E11: every alert in any status — a compliance screen (analysts work from their queue).

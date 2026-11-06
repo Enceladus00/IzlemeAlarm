@@ -115,6 +115,11 @@ describe('Detection overview', () => {
         return HttpResponse.json({
           days: 30,
           created: 10,
+          open: 3,
+          confirmed: 1,
+          escalation_rate: 0.2,
+          confirmed_rate: 1,
+          avg_decision_days: 2.5,
           analyst_closed: 6,
           analyst_open: 2,
           escalated: 2,
@@ -135,6 +140,13 @@ describe('Detection overview', () => {
 
     await user.click(screen.getByRole('tab', { name: 'Alarm akışı' }));
     expect(await screen.findByText('Analist kapattı')).toBeInTheDocument();
+    // E10 KPIs; the daily chart reuses the cached summary, so no extra request.
+    expect(screen.getByText('Yükseltme oranı').parentElement).toHaveTextContent('%20');
+    expect(screen.getByText('Ort. karar süresi').parentElement).toHaveTextContent('2,5 gün');
+    expect(screen.getByText('Açık alarm').parentElement).toHaveTextContent('3');
+    expect(screen.getByTestId('escalation-accuracy')).toHaveTextContent('%100');
+    expect(screen.getByTestId('escalation-accuracy')).toHaveTextContent('1 onaylandı / 1 karar');
+    expect(screen.getAllByTestId('daily-bar')).toHaveLength(dashboardFixture.trends.length);
     expect(requests).toEqual(['summary?days=30', 'funnel?days=30']);
 
     await user.click(screen.getByRole('tab', { name: 'Kurallar' }));

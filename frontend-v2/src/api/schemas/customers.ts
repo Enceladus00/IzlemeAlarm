@@ -43,6 +43,39 @@ export const customerProfileSchema = z.object({
 });
 export type CustomerProfile = z.infer<typeof customerProfileSchema>;
 
+const counterpartySchema = z.object({
+  account_no: z.string(),
+  customer_no: z.string(),
+  customer_name: z.string(),
+  currency: z.string(),
+  count: z.number(),
+  amount: decimal,
+  /** E12 "YENİ": no transaction with the customer in the 12 months before the period. */
+  is_new: z.boolean(),
+});
+export type Counterparty = z.infer<typeof counterpartySchema>;
+
+/** GET /customers/{no}/analysis?days=30|90|180 (E12); logged as a customer view. */
+export const customerAnalysisSchema = z.object({
+  customer_no: z.string(),
+  days: z.number(),
+  date_from: z.string(),
+  date_to: z.string(),
+  monthly: z.array(z.object({ month: z.string(), currency: z.string(), incoming: decimal, outgoing: decimal })),
+  income_check: z.object({
+    monthly_income: decimal.nullable(),
+    currency: z.string(),
+    peak_month: z.string().nullable(),
+    peak_direction: z.enum(['incoming', 'outgoing']).nullable(),
+    peak_amount: decimal.nullable(),
+    ratio: decimal.nullable(),
+    threshold: decimal,
+    exceeded: z.boolean(),
+  }),
+  counterparties: z.object({ incoming: z.array(counterpartySchema), outgoing: z.array(counterpartySchema) }),
+});
+export type CustomerAnalysis = z.infer<typeof customerAnalysisSchema>;
+
 /** GET /accounts item: full account numbers, so each page is view-logged (K6). */
 export const accountListItemSchema = z.object({
   account_no: z.string(),

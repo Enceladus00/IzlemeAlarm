@@ -7,6 +7,8 @@ customer's name and number is logged.
 * GET /customers/{no} (full profile): the customer is logged.
 """
 
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 from typing import Any
 
 from backend.repositories.customer_repository import (
@@ -17,6 +19,12 @@ from backend.repositories.customer_repository import (
 
 
 MSG_CUSTOMER_NOT_FOUND = "Customer not found."
+# E12: warn when a month's TRY inflow or outflow reaches this multiple of monthly income.
+INCOME_WARNING_MULTIPLE = Decimal("3")
+INCOME_CURRENCY = "TRY"
+COUNTERPARTY_LIMIT = 10
+# "YENİ" counterparty: no transaction with the customer in the 12 months before the period.
+NEW_COUNTERPARTY_LOOKBACK_DAYS = 365
 
 
 class CustomerNotFound(LookupError):
@@ -80,6 +88,78 @@ class CustomerService:
         }
         self._repository.log_customer_views(actor_id, [customer.customer_no], "customer_profile")
         return result
+
+    def analysis(self, customer_no: str, days: int, actor_id: int) -> dict[str, Any]:
+        """E12 customer analysis for the last `days` days (including today)."""
+        customer = self._repository.get_customer(customer_no)
+        if customer is None:
+            raise CustomerNotFound(MSG_CUSTOMER_NOT_FOUND)
+        today = date.today()
+        date_from = today - timedelta(days=days - 1)
+        since = datetime.combine(date_from, time.min)
+        until = datetime.combine(today + timedelta(days=1), time.min)
+        data = self._repository.customer_analysis(
+            customer.customer_id,
+            since,
+            until,
+            since - timedelta(days=NEW_COUNTERPARTY_LOOKBACK_DAYS),
+        )
+        monthly = [
+            {
+                "month": row["month"].strftime("%Y-%m"),
+                "currency": row["currency"],
+                "incoming": row["incoming"],
+                "outgoing": row["outgoing"],
+            }
+            for row in data["monthly"]
+        ]
+        income = customer.monthly_income
+        peak: dict[str, Any] | None = None
+        for row in monthly:
+            if row["currency"] != INCOME_CURRENCY:
+                continue
+            for direction in ("incoming", "outgoing"):
+                if row[direction] > 0 and (peak is None or row[direction] > peak["amount"]):
+                    peak = {"month": row["month"], "direction": direction, "amount": row[direction]}
+        ratio = (
+            (peak["amount"] / income).quantize(Decimal("0.1"))
+            if peak and income and income > 0
+            else None
+        )
+        counterparties: dict[str, list[dict[str, Any]]] = {"incoming": [], "outgoing": []}
+        for row in data["counterparties"]:
+            bucket = counterparties["incoming" if row["direction"] == "in" else "outgoing"]
+            if len(bucket) < COUNTERPARTY_LIMIT:
+                bucket.append(
+                    {
+                        "account_no": row["account_no"],
+                        "customer_no": row["customer_no"],
+                        "customer_name": row["customer_name"],
+                        "currency": row["currency"],
+                        "count": int(row["count"]),
+                        "amount": row["amount"],
+                        "is_new": bool(row["is_new"]),
+                    }
+                )
+        self._repository.log_customer_views(actor_id, [customer.customer_no], "customer_analysis")
+        return {
+            "customer_no": customer.customer_no,
+            "days": days,
+            "date_from": date_from,
+            "date_to": today,
+            "monthly": monthly,
+            "income_check": {
+                "monthly_income": income,
+                "currency": INCOME_CURRENCY,
+                "peak_month": peak["month"] if peak else None,
+                "peak_direction": peak["direction"] if peak else None,
+                "peak_amount": peak["amount"] if peak else None,
+                "ratio": ratio,
+                "threshold": INCOME_WARNING_MULTIPLE,
+                "exceeded": ratio is not None and ratio >= INCOME_WARNING_MULTIPLE,
+            },
+            "counterparties": counterparties,
+        }
 
     def list_accounts(self, filters: AccountFilters, actor_id: int) -> dict[str, Any]:
         total, rows = self._repository.list_accounts(filters)

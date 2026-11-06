@@ -21,6 +21,8 @@ import { Select } from '@/components/ui/Select';
 import { PageSpinner } from '@/components/ui/Spinner';
 import { formatDateTime } from '@/utils/format';
 import { useCreateUser, useRoles, useUpdateUser, useUsers } from './api';
+import { permissionUniverse } from './permissions';
+import { PermissionLists, RoleCards } from './RoleCards';
 
 const utf8Length = (value: string) => new TextEncoder().encode(value).length;
 
@@ -87,6 +89,7 @@ export default function UsersPage() {
           {notice}
         </InlineAlert>
       )}
+      {roles.data && roles.data.length > 0 && <RoleCards roles={roles.data} roleName={roleName} />}
       <Card>
         {users.data.length === 0 ? (
           <EmptyState icon={Users} title={t('users.empty')} />
@@ -192,6 +195,7 @@ function CreateUserDialog({
     register,
     handleSubmit,
     reset,
+    watch,
     formState: { errors },
   } = useForm<CreateValues>({ resolver: zodResolver(createSchema), defaultValues: { username: '', password: '', role_code: defaultRole } });
 
@@ -203,6 +207,8 @@ function CreateUserDialog({
     }
     onOpenChange(next);
   };
+
+  const selectedRole = roles.find((role) => role.role_code === watch('role_code'));
 
   const message = (key?: string) => (key ? t(`users.${key as 'usernameRequired'}`, { max: key === 'usernameTooLong' ? USERNAME_MAX : PASSWORD_MAX_BYTES }) : undefined);
 
@@ -244,6 +250,12 @@ function CreateUserDialog({
             ))}
           </Select>
         </Field>
+        {selectedRole && (
+          <div className="rounded-md bg-surface-muted p-3" data-testid="selected-role-permissions">
+            <p className="mb-2 text-xs font-medium text-muted">{t('users.selectedRole')}</p>
+            <PermissionLists role={selectedRole} universe={permissionUniverse(roles)} compact />
+          </div>
+        )}
         {create.isError && <ErrorState error={create.error} title={t('errors.validation')} />}
         <div className="flex justify-end gap-2">
           <Button onClick={() => close(false)}>{t('users.cancel')}</Button>
@@ -277,7 +289,7 @@ function EditUserDialog({
   const [active, setActive] = useState(user.is_active);
   const [unchanged, setUnchanged] = useState(false);
   // A user may hold a role that is no longer active; keep it selectable.
-  const options = roles.some((role) => role.role_code === user.role_code) ? roles : [{ role_code: user.role_code, name: user.role_code }, ...roles];
+  const options = roles.some((role) => role.role_code === user.role_code) ? roles : [{ role_code: user.role_code, name: user.role_code, permissions: [] }, ...roles];
 
   const save = () => {
     const body: { role_code?: string; is_active?: boolean } = {};

@@ -12,6 +12,7 @@ import { PageSpinner } from '@/components/ui/Spinner';
 import { useCustomerAlerts } from '@/features/alerts/api';
 import { formatDate, formatDateTime, formatMoney, formatNumber } from '@/utils/format';
 import { useCustomerProfile } from './api';
+import { CustomerAnalysis } from './CustomerAnalysis';
 
 /** Full customer profile (GET /customers/{no}); opening it is written to the audit log. */
 export default function CustomerDetailPage() {
@@ -159,6 +160,8 @@ export default function CustomerDetailPage() {
           {data.accounts.length === 0 && <p className="px-3 py-4 text-[13px] text-muted">{t('customers.noAccounts')}</p>}
         </div>
       </Card>
+
+      <CustomerAnalysis customerNo={data.customer_no} />
     </>
   );
 }

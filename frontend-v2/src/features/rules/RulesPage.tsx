@@ -23,6 +23,7 @@ import type { RulePerformance } from '@/api/schemas/dashboard';
 import { useRulePerformance } from '@/features/detection-overview/api';
 import { needsReview, REVIEW_PERIOD_DAYS } from '@/features/detection-overview/review';
 import { useRules, useUpdateRule } from './api';
+import { RuleExplainer } from './RuleExplainer';
 import { RuleHistoryCard, RulePerformanceSummary } from './RuleInsights';
 import { buildRuleUpdate, copyIndividualToCorporate, draftFromRule, type DraftErrors, type RuleDraft } from './model';
 import { ParameterFields } from './ParameterFields';
@@ -214,6 +215,25 @@ function RuleEditor({ rule, performance }: { rule: Rule; performance?: RulePerfo
     );
   }
 
+  // E09: without rule:edit there is no form — a read-only explanation instead.
+  if (!canEdit) {
+    return (
+      <div className="space-y-4">
+        <Card className="space-y-4 p-5">
+          <RuleHeading rule={rule} />
+          <InlineAlert tone="info">
+            <span className="inline-flex flex-wrap items-center gap-1.5">
+              <Lock className="size-3.5" aria-hidden />
+              <strong>{t('ruleExplain.readOnlyBadge')}</strong>
+              {t('ruleExplain.readOnlyBody')}
+            </span>
+          </InlineAlert>
+        </Card>
+        <RuleExplainer rule={rule} />
+      </div>
+    );
+  }
+
   const metadata = rule.metadata;
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -226,7 +246,6 @@ function RuleEditor({ rule, performance }: { rule: Rule; performance?: RulePerfo
     <form onSubmit={submit} noValidate className="space-y-4">
       <Card className="space-y-4 p-5">
         <RuleHeading rule={rule} />
-        {!canEdit && <InlineAlert tone="info">{t('rules.readOnlyNotice')}</InlineAlert>}
         {performance && <RulePerformanceSummary row={performance} />}
 
         <div className="rounded-md border border-border">
@@ -303,6 +322,8 @@ function RuleEditor({ rule, performance }: { rule: Rule; performance?: RulePerfo
           </Field>
         </div>
       </Card>
+
+      <RuleExplainer rule={rule} />
 
       {canEdit && (
         <div className="flex justify-end">

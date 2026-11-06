@@ -8,8 +8,8 @@ describe('permission-aware navigation (parity with frontend/app.py)', () => {
     expect(ids(ADMIN_PERMISSIONS)).toHaveLength(NAV_ITEMS.length);
   });
 
-  it('gives the analyst role overview, alerts, the demo lab and read-only rules', () => {
-    expect(ids(ANALYST_PERMISSIONS)).toEqual(['detectionOverview', 'alerts', 'demoLab', 'rules']);
+  it('gives the analyst role their panel (E08), overview, alerts, the demo lab and read-only rules', () => {
+    expect(ids(ANALYST_PERMISSIONS)).toEqual(['myPanel', 'detectionOverview', 'alerts', 'demoLab', 'rules']);
   });
 
   it('gives compliance officers alerts, all alerts, transaction analysis, rules and the audit log', () => {
@@ -40,7 +40,8 @@ describe('permission-aware navigation (parity with frontend/app.py)', () => {
   });
 
   it('lands on the first permitted screen, or nowhere', () => {
-    expect(homePath(new Set(ANALYST_PERMISSIONS))).toBe('/overview');
+    expect(homePath(new Set(ANALYST_PERMISSIONS))).toBe('/my-panel');
+    expect(homePath(new Set(COMPLIANCE_PERMISSIONS))).toBe('/overview');
     expect(homePath(new Set(['audit:view']))).toBe('/audit');
     expect(homePath(new Set())).toBeNull();
   });

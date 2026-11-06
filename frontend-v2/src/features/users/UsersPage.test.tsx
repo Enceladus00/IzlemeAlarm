@@ -20,8 +20,8 @@ beforeEach(() => {
     http.get(`${API}/users`, () => HttpResponse.json(users)),
     http.get(`${API}/users/roles`, () =>
       HttpResponse.json([
-        { role_code: 'admin', name: 'Admin' },
-        { role_code: 'analyst', name: 'Analist' },
+        { role_code: 'admin', name: 'Admin', permissions: ['audit:view', 'user:manage'] },
+        { role_code: 'analyst', name: 'Analist', permissions: ['alert:escalate', 'alert:view'] },
       ]),
     ),
     http.post(`${API}/users`, async ({ request }) => {
@@ -48,6 +48,25 @@ describe('User management', () => {
     expect(within(rows[0]!).getByText('(siz)')).toBeInTheDocument();
     expect(within(rows[1]!).getByText('Analist')).toBeInTheDocument();
     expect(within(rows[2]!).getByText('Pasif')).toBeInTheDocument();
+  });
+
+  it('shows a card per role with what it can and cannot do (E14)', async () => {
+    storeSession('admin');
+    const { user } = renderApp('/users');
+    const analyst = await screen.findByRole('article', { name: 'Analist' });
+    const can = within(analyst).getByRole('region', { name: 'Yapabildikleri' });
+    const cannot = within(analyst).getByRole('region', { name: 'Yapamadıkları' });
+    expect(within(can).getByText('Yeni alarmı uyum görevlisine yükseltir')).toBeInTheDocument();
+    expect(within(cannot).getByText('Kullanıcı oluşturur, rol atar, hesabı kapatır')).toBeInTheDocument();
+    const admin = screen.getByRole('article', { name: 'Yönetici' });
+    expect(within(within(admin).getByRole('region', { name: 'Yapamadıkları' })).getByText('Alarmları ve alarma bağlı inceleme verilerini görür')).toBeInTheDocument();
+
+    // The create form summarises the selected role and follows the selection.
+    await user.click(screen.getByRole('button', { name: 'Kullanıcı oluştur' }));
+    const summary = within(screen.getByRole('dialog')).getByTestId('selected-role-permissions');
+    expect(within(summary).getByText('Yeni alarmı uyum görevlisine yükseltir')).toBeInTheDocument();
+    await user.selectOptions(within(screen.getByRole('dialog')).getByLabelText('Rol'), 'admin');
+    expect(within(within(summary).getByRole('region', { name: 'Yapabildikleri' })).getByText('Denetim kaydını görür')).toBeInTheDocument();
   });
 
   it('validates and creates a user', async () => {

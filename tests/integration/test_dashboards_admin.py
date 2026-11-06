@@ -34,6 +34,23 @@ def test_funnel_adds_up(client, users, factory):
     assert body["escalated"] == outcome["confirmed"] + outcome["closed"] + outcome["returned"] + outcome["pending"]
 
 
+def test_funnel_kpis(client, users, factory):
+    customer = factory.customer()
+    created = datetime.now() - timedelta(days=3)
+    decided = factory.alert(customer, rule_code="R06", status="confirmed_suspicious", created_at=created)
+    factory.history(decided, users["analyst"]["user_id"], "new", "in_review", at=created + timedelta(days=1))
+    factory.history(decided, users["compliance"]["user_id"], "in_review", "confirmed_suspicious", at=created + timedelta(days=2))
+    factory.alert(customer, rule_code="R01")
+    factory.commit()
+    body = client.get("/dashboard/funnel", params={"days": 7}, headers=users["compliance"]["headers"]).json()
+    outcome = body["escalation_outcome"]
+    assert body["open"] == body["analyst_open"] + outcome["returned"] + outcome["pending"]
+    assert body["confirmed"] == outcome["confirmed"] >= 1
+    assert body["escalation_rate"] == round(body["escalated"] / body["created"], 3)
+    assert body["confirmed_rate"] == round(outcome["confirmed"] / (outcome["confirmed"] + outcome["closed"]), 3)
+    assert body["avg_decision_days"] is not None and body["avg_decision_days"] >= 0
+
+
 def test_rule_performance_hit_rate(client, users, factory):
     customer = factory.customer()
     factory.alert(customer, rule_code="R13", status="confirmed_suspicious")
@@ -152,6 +169,16 @@ def test_users_cannot_change_their_own_role_or_status(client, users):
     assert response.json()["detail"] == "You cannot change your own role or status."
     other = client.patch(f"/users/{users['analyst2']['user_id']}", json={"role_code": "compliance"}, headers=admin["headers"])
     assert other.status_code == 200 and other.json()["role_code"] == "compliance"
+
+
+def test_roles_list_their_permission_codes(client, users):
+    roles = client.get("/users/roles", headers=users["admin"]["headers"]).json()
+    by_code = {role["role_code"]: role for role in roles}
+    analyst = by_code["analyst"]["permissions"]
+    assert analyst == sorted(analyst)
+    assert "alert:escalate" in analyst and "alert:confirm" not in analyst
+    assert "alert:confirm" in by_code["compliance"]["permissions"]
+    assert "user:manage" in by_code["admin"]["permissions"]
 
 
 def test_system_overview_reports_schema_head(client, users):

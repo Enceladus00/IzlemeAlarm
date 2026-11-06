@@ -172,6 +172,8 @@ class SqlAlchemyAnalysisRepository:
         An alert counts as escalated when it was ever in in_review (or is confirmed,
         which legacy data could reach directly). Outcome = current status.
         created = analyst_closed + analyst_open + escalated always holds.
+        decision_days: created -> latest closing decision (closed or confirmed)
+        in alert_status_history; alerts decided without history are left out.
         """
         row = self._session.execute(
             text(
@@ -181,7 +183,13 @@ class SqlAlchemyAnalysisRepository:
                            (a.status IN ('in_review', 'confirmed_suspicious')
                             OR EXISTS (SELECT 1 FROM alert_status_history h
                                        WHERE h.alert_id = a.alert_id
-                                         AND h.new_status = 'in_review')) AS escalated
+                                         AND h.new_status = 'in_review')) AS escalated,
+                           CASE WHEN a.status IN ('closed', 'confirmed_suspicious') THEN
+                               (SELECT EXTRACT(EPOCH FROM (MAX(h.changed_at) - a.created_at)) / 86400.0
+                                FROM alert_status_history h
+                                WHERE h.alert_id = a.alert_id
+                                  AND h.new_status IN ('closed', 'confirmed_suspicious'))
+                           END AS decision_days
                     FROM alert a WHERE a.created_at >= :since
                 )
                 SELECT COUNT(*) AS created,
@@ -191,7 +199,9 @@ class SqlAlchemyAnalysisRepository:
                        COUNT(*) FILTER (WHERE escalated AND status = 'confirmed_suspicious') AS confirmed,
                        COUNT(*) FILTER (WHERE escalated AND status = 'closed') AS escalated_closed,
                        COUNT(*) FILTER (WHERE escalated AND status = 'new') AS returned,
-                       COUNT(*) FILTER (WHERE escalated AND status = 'in_review') AS pending
+                       COUNT(*) FILTER (WHERE escalated AND status = 'in_review') AS pending,
+                       COUNT(*) FILTER (WHERE status IN ('new', 'in_review')) AS open,
+                       AVG(decision_days) AS avg_decision_days
                 FROM created
                 """
             ),

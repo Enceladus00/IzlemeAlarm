@@ -87,3 +87,51 @@ def test_customer_lists_need_customer_view(client, users):
     assert client.get("/accounts", headers=analyst).status_code == 403
     assert client.get("/customers/C-1", headers=analyst).status_code == 403
     assert client.get("/customers", headers=users["admin"]["headers"]).status_code == 200
+
+
+def test_customer_analysis_income_check_and_new_counterparties(client, users, factory, session):
+    from datetime import datetime, timedelta
+
+    customer = factory.customer(monthly_income="28000.00")
+    own = factory.account(customer)
+    second_own = factory.account(customer)
+    known = factory.account(factory.customer("Eski Tanıdık"))
+    fresh = factory.account(factory.customer("Yeni Gönderen"))
+    now = datetime.now()
+    # Known counterparty: also seen 200 days ago (inside the 12-month lookback).
+    factory.transaction(known, own, "500.00", tx_time=now - timedelta(days=200))
+    factory.transaction(known, own, "21850.00", tx_time=now)
+    factory.transaction(fresh, own, "100000.00", tx_time=now)
+    factory.transaction(own, fresh, "3000.00", tx_time=now)
+    factory.transaction(own, second_own, "99999.00", tx_time=now)  # own transfer: ignored
+    factory.commit()
+    headers = users["compliance"]["headers"]
+
+    body = client.get(f"/customers/{customer.customer_no}/analysis", params={"days": 30}, headers=headers).json()
+    month = now.strftime("%Y-%m")
+    assert body["days"] == 30
+    assert {"month": month, "currency": "TRY", "incoming": "121850.00", "outgoing": "3000.00"} in body["monthly"]
+    check = body["income_check"]
+    # 121.850 / 28.000 = 4,4 × (guide E12)
+    assert check["ratio"] == "4.4" and check["exceeded"] is True and check["peak_direction"] == "incoming"
+    incoming = {row["customer_name"]: row for row in body["counterparties"]["incoming"]}
+    assert incoming["Yeni Gönderen"]["is_new"] is True
+    assert incoming["Eski Tanıdık"]["is_new"] is False
+    assert [row["customer_name"] for row in body["counterparties"]["incoming"]] == ["Yeni Gönderen", "Eski Tanıdık"]
+    assert body["counterparties"]["outgoing"][0]["is_new"] is True
+    assert all(row["account_no"] != second_own.account_no for row in body["counterparties"]["outgoing"])
+    assert _views(session, users["compliance"]["user_id"], "customer_analysis") == [customer.customer_no]
+
+    assert client.get(f"/customers/{customer.customer_no}/analysis", params={"days": 7}, headers=headers).status_code == 422
+    assert client.get(f"/customers/{customer.customer_no}/analysis", headers=users["analyst"]["headers"]).status_code == 403
+    assert client.get("/customers/NOPE-404/analysis", headers=headers).status_code == 404
+
+
+def test_customer_analysis_without_threshold_breach(client, users, factory):
+    customer = factory.customer(monthly_income="28000.00")
+    own = factory.account(customer)
+    other = factory.account(factory.customer("Karşı"))
+    factory.transaction(other, own, "30000.00")
+    factory.commit()
+    check = client.get(f"/customers/{customer.customer_no}/analysis", headers=users["compliance"]["headers"]).json()["income_check"]
+    assert check["ratio"] == "1.1" and check["exceeded"] is False and check["threshold"] == "3"

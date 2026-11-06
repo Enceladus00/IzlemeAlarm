@@ -284,7 +284,72 @@ class SqlAlchemyAlertRepository:
             ),
             {"user_id": user_id},
         ).mappings().all()
-        return {"counts": dict(counts), "returned": [dict(row) for row in returned]}
+        # E08: the shared analyst queue, and what became of this user's escalations.
+        queue = self._session.execute(
+            text(
+                """
+                SELECT COUNT(*) AS queue_pending,
+                       COUNT(*) FILTER (WHERE severity = 'high') AS queue_high
+                FROM alert WHERE status = 'new'
+                """
+            )
+        ).mappings().one()
+        escalations = self._session.execute(
+            text(
+                """
+                WITH mine AS (
+                    SELECT h.alert_id, MIN(h.changed_at) AS first_escalated_at
+                    FROM alert_status_history h
+                    WHERE h.changed_by = :user_id AND h.new_status = 'in_review'
+                      AND h.changed_at >= :since
+                    GROUP BY h.alert_id
+                )
+                SELECT COUNT(*) AS escalations_30d,
+                       COUNT(*) FILTER (WHERE a.status = 'confirmed_suspicious') AS confirmed,
+                       COUNT(*) FILTER (WHERE a.status = 'closed') AS closed,
+                       COUNT(*) FILTER (WHERE a.status = 'new') AS returned,
+                       COUNT(*) FILTER (WHERE a.status = 'in_review') AS pending,
+                       COUNT(*) FILTER (WHERE m.first_escalated_at >= :day_start
+                                          AND a.status = 'confirmed_suspicious')
+                           AS escalated_today_confirmed
+                FROM mine m JOIN alert a ON a.alert_id = m.alert_id
+                """
+            ),
+            {"user_id": user_id, "since": day_start - timedelta(days=29), "day_start": day_start},
+        ).mappings().one()
+        decisions = self._session.execute(
+            text(
+                """
+                SELECT h.alert_id, h.old_status, h.new_status, h.changed_at, h.note,
+                       c.customer_no, c.full_name AS customer_name, r.rule_code, a.severity
+                FROM alert_status_history h
+                JOIN alert a ON a.alert_id = h.alert_id
+                JOIN customer c ON c.customer_id = a.customer_id
+                JOIN monitoring_rule r ON r.rule_id = a.rule_id
+                WHERE h.changed_by = :user_id AND h.changed_at >= :day_start
+                  AND h.old_status IS DISTINCT FROM h.new_status
+                ORDER BY h.changed_at DESC, h.history_id DESC
+                LIMIT 100
+                """
+            ),
+            {"user_id": user_id, "day_start": day_start},
+        ).mappings().all()
+        closed_today = self._session.execute(
+            text(
+                """
+                SELECT COUNT(DISTINCT alert_id) FROM alert_status_history
+                WHERE changed_by = :user_id AND changed_at >= :day_start
+                  AND new_status = 'closed'
+                """
+            ),
+            {"user_id": user_id, "day_start": day_start},
+        ).scalar_one()
+        return {
+            "counts": {**dict(counts), **dict(queue), "closed_today": closed_today},
+            "escalations": dict(escalations),
+            "decisions": [dict(row) for row in decisions],
+            "returned": [dict(row) for row in returned],
+        }
 
     def list_rule_codes(self) -> list[str]:
         return list(
