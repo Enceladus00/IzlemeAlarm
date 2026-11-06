@@ -33,7 +33,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # The AWS Organization's SCP blocks GitHub OIDC providers, so a dedicated
       # least-privilege IAM user (github-izlemealarm-deploy) is used instead.
@@ -60,7 +60,7 @@ jobs:
 
       # The schema must be at the new code's revision before new tasks start.
       # Migrations are additive, so the old tasks keep working meanwhile.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip

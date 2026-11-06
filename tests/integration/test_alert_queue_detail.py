@@ -288,8 +288,14 @@ def test_k8_explanation_comes_from_the_scoring_run(client, users, session, facto
     assert explanation["steps"][0]["details"]["history_count"] == 64
 
 
-def test_k8_legacy_rule_alert_has_no_explanation(client, users, factory):
-    alert = factory.alert(factory.customer(), rule_code="R1")
+def test_k8_legacy_rule_alert_has_no_explanation(client, users, factory, session):
+    from backend.models import MonitoringRule
+
+    # A rule with no registered implementation (like legacy R1–R4). Created here
+    # because a freshly migrated database (CI) does not seed the legacy rules.
+    session.add(MonitoringRule(rule_code="LGCY-T", name="Legacy test rule", description="test", thresholds={}))
+    session.flush()
+    alert = factory.alert(factory.customer(), rule_code="LGCY-T")
     factory.commit()
     body = client.get(f"/alerts/{alert.alert_id}", headers=users["analyst"]["headers"]).json()
     assert body["explanation"] is None
