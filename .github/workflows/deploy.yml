@@ -1,11 +1,15 @@
 name: Deploy backend
 
-# Every push to main: run CI, then build the backend image, push it to ECR,
-# migrate the production database and roll the ECS Express service onto the image.
+# Every push to main runs CI. Deploying (build image → ECR → migrate Neon → ECS) happens:
+#   * manually: Actions tab → "Deploy backend" → "Run workflow" (always deploys main), or
+#   * automatically on push, only when the repository variable AUTO_DEPLOY is "true"
+#     AND the push changed something the backend depends on (see BACKEND_PATHS).
+# Switch: gh variable set AUTO_DEPLOY --body true   (or false)
+#         or GitHub → Settings → Secrets and variables → Actions → Variables.
 on:
   push:
     branches: [main]
-  workflow_dispatch: # manual re-run from the Actions tab
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -25,9 +29,44 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
+  # Did this push touch the backend? (Manual runs skip this and always deploy.)
+  changes:
+    name: Detect backend changes
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.diff.outputs.backend }}
+    env:
+      # Anything that ends up in the backend image or the production schema.
+      BACKEND_PATHS: '^(backend/|alembic/|alembic\.ini$|database/|Dockerfile\.backend$|\.github/workflows/deploy\.yml$)'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # A first push has no "before" commit: treat it as a backend change.
+          if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+          echo "Changed files:"; echo "$changed"
+          if echo "$changed" | grep -qE "$BACKEND_PATHS"; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "backend=false" >> "$GITHUB_OUTPUT"
+          fi
+
   deploy:
     name: Build and deploy
-    needs: ci
+    needs: [ci, changes]
+    # always() lets a manual run proceed although "changes" is skipped; CI must still pass.
+    if: >-
+      always() && needs.ci.result == 'success' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (vars.AUTO_DEPLOY == 'true' && needs.changes.outputs.backend == 'true'))
     runs-on: ubuntu-latest
     environment: production
     permissions:
