@@ -489,11 +489,30 @@ class FlowRoute(BaseModel):
     count: int
     amount: Decimal
     alert_linked: int
+    # Signed handles for expanding a counterparty in the network graph.
+    sender_ref: str = ""
+    receiver_ref: str = ""
+    sender_label: str = ""
+    receiver_label: str = ""
+    alert_rules: list[str] = []
+
+
+class CurrencyAmount(BaseModel):
+    currency: str
+    amount: Decimal
 
 
 class OtherRoutes(BaseModel):
     route_count: int
     count: int
+    by_currency: list[CurrencyAmount] = []
+
+
+class FlowTimelinePoint(BaseModel):
+    date: date
+    currency: str
+    incoming: Decimal
+    outgoing: Decimal
 
 
 class TransactionSummary(BaseModel):
@@ -503,6 +522,8 @@ class TransactionSummary(BaseModel):
     timeline: Timeline
     routes: list[FlowRoute]
     other_routes: OtherRoutes
+    # Money into / out of the focus per bucket; empty without a focus.
+    flow_timeline: list[FlowTimelinePoint] = []
 
 
 # --- Customers and accounts (customer:view) ---------------------------------------

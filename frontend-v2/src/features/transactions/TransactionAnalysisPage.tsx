@@ -30,9 +30,12 @@ import {
   type Direction,
   type TxFilters,
 } from './filters';
-import { buildFlowLayoutFromRoutes, centsToDecimal, toCents } from './flow';
-import { FlowDiagram, FlowRouteTable } from './FlowDiagram';
-import { focusOptions, type CurrencyTotal, type FocusOption } from './summary';
+import { useAccounts, useCustomers } from '@/features/customers/api';
+import { CounterpartyFlow, CounterpartyTable } from './CounterpartyFlow';
+import { centsToDecimal, toCents } from './flow';
+import { FocusPicker } from './FocusPicker';
+import { NetworkGraph } from './NetworkGraph';
+import { type CurrencyTotal, type FocusOption } from './summary';
 
 function moneyList(totals: CurrencyTotal[], language: string): string {
   if (totals.length === 0) return '0';
@@ -62,7 +65,16 @@ export default function TransactionAnalysisPage() {
   }, [paramsKey]);
 
   const query = useMemo(() => toTxQuery(applied), [paramsKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const transactions = useTransactions(query, appliedValid);
+  // Transfers are only listed for one customer or account; without one the
+  // page shows server-side totals, not an arbitrary slice of the ledger.
+  const focus = parseFocus(params.get('focus'));
+  const listQuery = useMemo(() => {
+    if (focus) {
+      return { ...query, customer_no: undefined, [focus.type === 'customer' ? 'customer_no' : 'account_no']: focus.id };
+    }
+    return query.customer_no ? query : null;
+  }, [query, focus?.type, focus?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const transactions = useTransactions(listQuery ?? {}, appliedValid && listQuery !== null);
   const loaded: Transaction[] = transactions.data?.pages.flatMap((page) => page.items) ?? [];
   const total = transactions.data?.pages[0]?.total ?? 0;
 
@@ -112,7 +124,7 @@ export default function TransactionAnalysisPage() {
             <Input type="number" inputMode="decimal" min="0.01" step="any" value={draft.max} onChange={(e) => setField('max', e.target.value)} />
           </Field>
           <div className="flex items-end gap-2">
-            <Button type="submit" variant="primary" loading={transactions.isFetching && !transactions.isFetchingNextPage}>
+            <Button type="submit" variant="primary">
               {t('txAnalysis.analyze')}
             </Button>
             <Button
@@ -134,25 +146,11 @@ export default function TransactionAnalysisPage() {
         <InlineAlert tone={appliedErrors.direction ? 'info' : 'danger'} live>
           {Object.values(appliedErrors).map((code) => t(`txAnalysis.${code}`)).join(' ')}
         </InlineAlert>
-      ) : transactions.isError ? (
-        <ErrorState error={transactions.error} onRetry={() => void transactions.refetch()} />
-      ) : transactions.isPending ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {Array.from({ length: 4 }, (_, index) => (
-            <StatCard key={index} loading label=" " value="" />
-          ))}
-        </div>
-      ) : loaded.length === 0 ? (
-        <Card>
-          <EmptyState icon={SearchX} title={t('txAnalysis.emptyTitle')}>
-            {t('txAnalysis.emptyBody')}
-          </EmptyState>
-        </Card>
       ) : (
         <Results
-          transactions={loaded}
+          list={listQuery ? { transactions: loaded, error: transactions.isError ? transactions.error : null, pending: transactions.isPending, retry: () => void transactions.refetch() } : null}
           total={total}
-          customerNo={applied.customer}
+          customerNo={focus?.type === 'customer' ? focus.id : applied.customer}
           baseQuery={query}
           direction={applied.direction}
           focusParam={params.get('focus')}
@@ -168,7 +166,7 @@ export default function TransactionAnalysisPage() {
 }
 
 function Results({
-  transactions,
+  list,
   total,
   customerNo,
   baseQuery,
@@ -180,7 +178,7 @@ function Results({
   onLoadMore,
   language,
 }: {
-  transactions: Transaction[];
+  list: { transactions: Transaction[]; error: unknown; pending: boolean; retry: () => void } | null;
   total: number;
   customerNo: string;
   baseQuery: ReturnType<typeof toTxQuery>;
@@ -197,8 +195,23 @@ function Results({
   const serverSummary = useTransactionSummary(baseQuery);
   const fmt = (value: number) => formatNumber(value, language);
   if (serverSummary.isError) return <ErrorState error={serverSummary.error} onRetry={() => void serverSummary.refetch()} />;
-  if (!serverSummary.data) return <div className="h-40 animate-pulse rounded-md bg-neutral-soft" aria-hidden />;
+  if (!serverSummary.data)
+    return (
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {Array.from({ length: 4 }, (_, index) => (
+          <StatCard key={index} loading label=" " value="" />
+        ))}
+      </div>
+    );
   const data = serverSummary.data;
+  if (data.transfer_count === 0)
+    return (
+      <Card>
+        <EmptyState icon={SearchX} title={t('txAnalysis.emptyTitle')}>
+          {t('txAnalysis.emptyBody')}
+        </EmptyState>
+      </Card>
+    );
   const focused = data.by_currency.some((row) => row.incoming !== null);
   const totalsOf = (pick: (row: (typeof data.by_currency)[number]) => { amount: string | null; count: number | null }): CurrencyTotal[] =>
     data.by_currency
@@ -236,7 +249,7 @@ function Results({
 
   return (
     <div className="space-y-4">
-      <p className="text-xs text-muted">{t('txAnalysis.summary', { total, shown: transactions.length })}</p>
+      <p className="text-xs text-muted">{t('txAnalysis.summary', { total: data.transfer_count })}</p>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label={t('txAnalysis.metricTransfers')} value={fmt(summary.count)} />
@@ -309,7 +322,6 @@ function Results({
       </div>
 
       <AccountMovement
-        transactions={transactions}
         baseQuery={baseQuery}
         direction={direction}
         focusParam={focusParam}
@@ -317,20 +329,36 @@ function Results({
       />
 
       <Card>
-        <CardHeader title={t('txAnalysis.transfersTitle')} />
+        <CardHeader
+          title={t('txAnalysis.transfersTitle')}
+          description={list ? t('txAnalysis.transfersShown', { shown: list.transactions.length, total }) : undefined}
+        />
         <div className="px-2 pt-3 pb-3">
-          <TransactionTable
-            transactions={transactions}
-            label={t('txAnalysis.transfersTitle')}
-            focusCustomerNo={customerNo || undefined}
-            showAlertLinked
-          />
+          {!list ? (
+            <EmptyState icon={ArrowRightLeft} title={t('txAnalysis.transfersPickTitle')} className="py-6">
+              {t('txAnalysis.transfersPickBody')}
+            </EmptyState>
+          ) : list.error ? (
+            <ErrorState error={list.error} onRetry={list.retry} />
+          ) : list.pending ? (
+            <p className="flex items-center gap-2 px-3 text-[13px] text-muted" role="status">
+              <Spinner className="size-4" />
+              {t('txAnalysis.transfersLoading')}
+            </p>
+          ) : (
+            <TransactionTable
+              transactions={list.transactions}
+              label={t('txAnalysis.transfersTitle')}
+              focusCustomerNo={customerNo || undefined}
+              showAlertLinked
+            />
+          )}
         </div>
       </Card>
-      {hasMore && (
+      {list && hasMore && (
         <div className="flex justify-center">
           <Button loading={loadingMore} onClick={onLoadMore}>
-            {t('txAnalysis.loadMore', { count: Math.min(TX_PAGE_SIZE, total - transactions.length) })}
+            {t('txAnalysis.loadMore', { count: Math.min(TX_PAGE_SIZE, total - list.transactions.length) })}
           </Button>
         </div>
       )}
@@ -339,24 +367,37 @@ function Results({
 }
 
 function AccountMovement({
-  transactions,
   baseQuery,
   direction,
   focusParam,
   onFocus,
 }: {
-  transactions: Transaction[];
   baseQuery: ReturnType<typeof toTxQuery>;
   direction: Direction;
   focusParam: string | null;
   onFocus: (focus: string | null) => void;
 }) {
   const { t } = useTranslation();
-  const options = useMemo(() => focusOptions(transactions), [transactions]);
   const parsed = parseFocus(focusParam);
-  const focus = parsed ? (options.find((option) => option.type === parsed.type && option.id === parsed.id) ?? parsed) : null;
+  // The picker knows the name; a focus that came in through the URL is looked up once.
+  const [chosen, setChosen] = useState<FocusOption | null>(null);
+  const known = chosen && parsed && chosen.type === parsed.type && chosen.id === parsed.id ? chosen : null;
+  const lookupCustomer = useCustomers({ q: parsed?.id ?? '', limit: 1 }, Boolean(parsed && !known && parsed.type === 'customer'));
+  const lookupAccount = useAccounts({ q: parsed?.id ?? '', limit: 1 }, Boolean(parsed && !known && parsed.type === 'account'));
+  const focus: FocusOption | null = !parsed
+    ? null
+    : (known ??
+      (parsed.type === 'customer'
+        ? (() => {
+            const item = lookupCustomer.data?.items.find((entry) => entry.customer_no === parsed.id);
+            return item ? { ...parsed, name: item.full_name } : parsed;
+          })()
+        : (() => {
+            const item = lookupAccount.data?.items.find((entry) => entry.account_no === parsed.id);
+            return item ? { ...parsed, name: item.customer_name, customerNo: item.customer_no, currency: item.currency } : parsed;
+          })()));
 
-  // Same request Streamlit made: the page's date/amount filters, re-scoped to the focus.
+  // The page's date/amount filters, re-scoped to the focus.
   const focusQuery = focus
     ? {
         date_from: baseQuery.date_from,
@@ -368,34 +409,25 @@ function AccountMovement({
       }
     : null;
   const focused = useTransactionSummary(focusQuery);
-  const layout =
-    focused.data && focus
-      ? buildFlowLayoutFromRoutes(focused.data.routes, { focus: focus.name, counterparty: t('txAnalysis.counterparty') })
-      : null;
-  const optionLabel = (option: FocusOption) =>
-    option.type === 'customer'
-      ? t('txAnalysis.focusCustomer', { name: option.name, id: option.id })
-      : t('txAnalysis.focusAccount', { id: option.id, name: option.name });
+  const [view, setView] = useState<'rows' | 'network'>('rows');
+  const graphFilters = {
+    date_from: baseQuery.date_from,
+    date_to: baseQuery.date_to,
+    min_amount: baseQuery.min_amount,
+    max_amount: baseQuery.max_amount,
+  };
 
   return (
     <Card>
       <CardHeader title={t('txAnalysis.movementTitle')} description={t('txAnalysis.movementDescription')} />
       <div className="space-y-4 p-5">
-        <div className="max-w-xl">
-          <Field label={t('txAnalysis.focusLabel')}>
-            <Select value={focus ? `${focus.type}:${focus.id}` : ''} onChange={(e) => onFocus(e.target.value || null)}>
-              <option value="">{t('txAnalysis.focusNone')}</option>
-              {focus && !options.some((option) => option.type === focus.type && option.id === focus.id) && (
-                <option value={`${focus.type}:${focus.id}`}>{optionLabel(focus)}</option>
-              )}
-              {options.map((option) => (
-                <option key={`${option.type}:${option.id}`} value={`${option.type}:${option.id}`}>
-                  {optionLabel(option)}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </div>
+        <FocusPicker
+          focus={focus}
+          onChange={(option) => {
+            setChosen(option);
+            onFocus(option ? `${option.type}:${option.id}` : null);
+          }}
+        />
 
         {!focus ? (
           <EmptyState icon={ArrowRightLeft} title={t('txAnalysis.focusNone')} className="py-6">
@@ -408,35 +440,39 @@ function AccountMovement({
             <Spinner className="size-4" />
             {t('txAnalysis.focusLoading', { name: focus.name })}
           </p>
-        ) : !layout ? (
+        ) : focused.data.routes.length === 0 ? (
           <InlineAlert tone="info">{t('txAnalysis.focusEmpty')}</InlineAlert>
         ) : (
-          <div className={cn(focused.isFetching && 'opacity-70')}>
-            {focused.data.other_routes.route_count > 0 && (
-              <InlineAlert tone="info" className="mb-3">
-                {t('txAnalysis.otherRoutes', {
-                  routes: focused.data.other_routes.route_count,
-                  count: focused.data.other_routes.count,
-                })}
-              </InlineAlert>
+          <div className={cn('space-y-3', focused.isFetching && 'opacity-70')}>
+            <div className="inline-flex rounded-md border border-border p-0.5" role="group" aria-label={t('txAnalysis.viewLabel')}>
+              {(['rows', 'network'] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={view === value}
+                  onClick={() => setView(value)}
+                  className={cn(
+                    'rounded px-3 py-1 text-[13px] font-medium',
+                    view === value ? 'bg-accent text-accent-fg' : 'text-muted hover:bg-surface-muted',
+                  )}
+                >
+                  {t(`txAnalysis.views.${value}`)}
+                </button>
+              ))}
+            </div>
+            {view === 'network' ? (
+              <NetworkGraph key={`${focus.type}:${focus.id}`} summary={focused.data} focusName={focus.name} filters={graphFilters} />
+            ) : (
+              <ChartTableToggle
+                chart={(toggle) => (
+                  <>
+                    <div className="mb-2 flex justify-end">{toggle}</div>
+                    <CounterpartyFlow summary={focused.data} focusName={focus.name} />
+                  </>
+                )}
+                table={<CounterpartyTable summary={focused.data} />}
+              />
             )}
-            <ChartTableToggle
-              chart={(toggle) => (
-                <>
-                  <div className="mb-2 flex justify-end">{toggle}</div>
-                  <FlowDiagram layout={layout} focusLabel={optionLabel(focus)} />
-                </>
-              )}
-              table={<FlowRouteTable layout={layout} />}
-            />
-            <p className="mt-3 text-xs text-muted">
-              {t('txAnalysis.focusCaption', {
-                name: focus.name,
-                count: focused.data.transfer_count,
-                routes: layout.routes.length,
-                accounts: focused.data.account_count,
-              })}
-            </p>
           </div>
         )}
       </div>

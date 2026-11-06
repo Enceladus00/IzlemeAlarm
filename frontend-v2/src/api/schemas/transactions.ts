@@ -55,8 +55,24 @@ export const transactionSummarySchema = z.object({
       count: z.number(),
       amount: decimal,
       alert_linked: z.number(),
+      /** Signed handles to expand a counterparty (GET /transactions/summary?account_ref=). */
+      sender_ref: z.string().default(''),
+      receiver_ref: z.string().default(''),
+      /** Masked owner names ("K. Kara", "Nehir L. A."). */
+      sender_label: z.string().default(''),
+      receiver_label: z.string().default(''),
+      /** Codes of the rules whose alerts include transfers on this route. */
+      alert_rules: z.array(z.string()).default([]),
     }),
   ),
-  other_routes: z.object({ route_count: z.number(), count: z.number() }),
+  other_routes: z.object({
+    route_count: z.number(),
+    count: z.number(),
+    by_currency: z.array(z.object({ currency: z.string(), amount: decimal })).default([]),
+  }),
+  /** Money into / out of the focus per time bucket and currency; empty without a focus. */
+  flow_timeline: z
+    .array(z.object({ date: z.string(), currency: z.string(), incoming: decimal, outgoing: decimal }))
+    .default([]),
 });
 export type TransactionSummary = z.infer<typeof transactionSummarySchema>;

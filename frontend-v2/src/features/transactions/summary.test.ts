@@ -2,7 +2,7 @@ import type { Transaction } from '@/api/schemas/transactions';
 import { sampleTransaction } from '@/test/alertData';
 import { centsToDecimal } from './flow';
 import { parseTxFilters, toTxQuery, txFiltersToParams, validateTxFilters, EMPTY_TX_FILTERS } from './filters';
-import { activityTimeline, focusOptions, summarizeTransfers } from './summary';
+import { activityTimeline, summarizeTransfers } from './summary';
 
 const tx = (partial: Partial<Transaction>): Transaction => ({ ...sampleTransaction, ...partial });
 
@@ -54,13 +54,7 @@ describe('activityTimeline', () => {
   });
 });
 
-describe('focus options and filters', () => {
-  it('lists each customer and account once', () => {
-    const options = focusOptions(rows);
-    expect(options.filter((option) => option.type === 'customer').map((option) => option.id)).toEqual(['C-1042', 'C-0311']);
-    expect(options.filter((option) => option.type === 'account')).toHaveLength(2);
-  });
-
+describe('filters', () => {
   it('validates like the API', () => {
     expect(validateTxFilters({ ...EMPTY_TX_FILTERS, direction: 'incoming' })).toEqual({ direction: 'errorDirection' });
     expect(validateTxFilters({ ...EMPTY_TX_FILTERS, min: '0' })).toEqual({ min: 'errorAmountPositive' });

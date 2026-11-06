@@ -14,11 +14,12 @@ export const customerKeys = {
 };
 
 /** GET /customers — paged and searched on the server. */
-export function useCustomers(query: Query) {
+export function useCustomers(query: Query, enabled = true) {
   return useQuery({
     queryKey: customerKeys.list(query),
     queryFn: ({ signal }) => apiRequest('/customers', { query, schema: customerPageSchema, signal }),
     placeholderData: keepPreviousData,
+    enabled,
   });
 }
 

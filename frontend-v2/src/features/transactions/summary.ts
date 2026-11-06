@@ -105,19 +105,11 @@ export interface FocusOption {
   type: 'customer' | 'account';
   id: string;
   name: string;
-}
-
-/** Customers and accounts that appear in the loaded transfers, for the focus picker. */
-export function focusOptions(transactions: Transaction[]): FocusOption[] {
-  const seen = new Map<string, FocusOption>();
-  const add = (option: FocusOption) => seen.set(`${option.type}:${option.id}`, option);
-  for (const tx of transactions) {
-    add({ type: 'customer', id: tx.sender_customer_no, name: tx.sender_customer_name });
-    add({ type: 'customer', id: tx.receiver_customer_no, name: tx.receiver_customer_name });
-    add({ type: 'account', id: tx.sender_account_no, name: tx.sender_customer_name });
-    add({ type: 'account', id: tx.receiver_account_no, name: tx.receiver_customer_name });
-  }
-  return [...seen.values()].sort(
-    (a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name, 'tr') || a.id.localeCompare(b.id),
-  );
+  /** Extra details shown by the picker (optional, from the search APIs). */
+  customerNo?: string;
+  customerType?: string | null;
+  risk?: string | null;
+  openAlerts?: number;
+  accountCount?: number;
+  currency?: string;
 }

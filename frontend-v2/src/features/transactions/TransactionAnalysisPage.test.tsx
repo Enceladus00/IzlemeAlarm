@@ -126,11 +126,13 @@ describe('Transaction analysis', () => {
   it('shows totals per currency when no customer is selected', async () => {
     storeSession('mehmet.ozturk');
     renderApp('/transactions');
-    expect(await screen.findByText('3 eşleşen işlem · 3 gösteriliyor')).toBeInTheDocument();
+    expect(await screen.findByText('3 eşleşen işlem')).toBeInTheDocument();
     expect(screen.getByText('1.250,50 TRY · 50,00 USD')).toBeInTheDocument();
     expect(screen.getByText('Müşteri seçilmediği için yön ayrımı yapılmaz.')).toBeInTheDocument();
     expect(screen.queryByText('Gelen tutar')).not.toBeInTheDocument();
-    expect(requests.some((params) => params.get('limit') === '500')).toBe(true);
+    // Without a customer or account no transfer rows are fetched or listed.
+    expect(screen.getByText('İşlemleri listelemek için bir müşteri veya hesap seçin')).toBeInTheDocument();
+    expect(requests.some((params) => params.has('limit'))).toBe(false); // only the summary was requested
     expect(screen.queryByText(/yalnızca yüklenen işlemleri/)).not.toBeInTheDocument();
   });
 
@@ -150,7 +152,7 @@ describe('Transaction analysis', () => {
   it('validates filters before sending them', async () => {
     storeSession('mehmet.ozturk');
     const { user, router } = renderApp('/transactions');
-    await screen.findByText('3 eşleşen işlem · 3 gösteriliyor');
+    await screen.findByText('3 eşleşen işlem');
 
     await user.selectOptions(screen.getByLabelText('Yön'), 'outgoing');
     await user.type(screen.getByLabelText('En düşük tutar'), '500');
@@ -167,26 +169,50 @@ describe('Transaction analysis', () => {
     await waitFor(() => expect(requests.at(-1)!.get('min_amount')).toBe('500'));
   });
 
-  it('draws the focused flow from one server summary request (K12)', async () => {
+  it('finds a customer through server search and shows its counterparties (K12)', async () => {
     const many = Array.from({ length: 620 }, (_, index) => makeTx(index + 10));
-    server.use(transactionsHandler(many), summaryHandler(many));
+    const searches: string[] = [];
+    server.use(
+      transactionsHandler(many),
+      summaryHandler(many),
+      http.get(`${API}/customers`, ({ request }) => {
+        searches.push(new URL(request.url).searchParams.get('q') ?? '');
+        return HttpResponse.json({
+          total: 1,
+          items: [
+            {
+              customer_no: 'C-1042',
+              full_name: 'Ahmet Yılmaz',
+              customer_type: 'BIREYSEL',
+              risk_level: 'high',
+              is_active: true,
+              account_count: 1,
+              open_alert_count: 2,
+            },
+          ],
+        });
+      }),
+      http.get(`${API}/accounts`, () => HttpResponse.json({ total: 0, items: [] })),
+    );
     storeSession('mehmet.ozturk');
     const { user } = renderApp('/transactions');
-    await screen.findByText('620 eşleşen işlem · 500 gösteriliyor');
-    await user.selectOptions(screen.getByLabelText('Transfer bağlantılarını göster'), 'account:TR-ACC-1042');
+    await screen.findByText('620 eşleşen işlem');
 
-    expect(await screen.findByRole('img', { name: /Hesap: TR-ACC-1042 · Ahmet Yılmaz için transfer akışı/ })).toBeInTheDocument();
-    expect(screen.getByText(/eşleşen 620 transferin tümü: 1 para birimi bazlı rota, 2 hesap/)).toBeInTheDocument();
-    const focusRequests = requests.filter((params) => params.get('account_no') === 'TR-ACC-1042');
-    expect(focusRequests).toHaveLength(1);
-    expect(focusRequests[0]!.get('offset')).toBeNull();
+    await user.type(screen.getByRole('combobox', { name: 'Müşteri veya hesap' }), 'Ahmet');
+    const option = await screen.findByRole('option', { name: /Ahmet Yılmaz/ });
+    expect(within(option).getByText('Risk: Yüksek')).toBeInTheDocument();
+    expect(within(option).getByText('2 açık alarm')).toBeInTheDocument();
+    await user.click(option);
 
-    // The second toggle belongs to the flow diagram (the first is the timeline's).
+    // One counterparty row: everything goes to the same receiver in the fixture.
+    expect(await screen.findByText(/1 karşı taraf/)).toBeInTheDocument();
+    expect(searches.at(-1)).toBe('Ahmet');
+    const focusRequests = requests.filter((params) => params.get('customer_no') === 'C-1042');
+    expect(focusRequests.length).toBeGreaterThan(0);
+
     await user.click(screen.getAllByRole('button', { name: 'Tablo olarak göster' }).at(-1)!);
-    expect(screen.getByRole('columnheader', { name: 'Rota' })).toBeInTheDocument();
-    // Once in the all-records summary box (K12) and once in the route table.
-    expect(screen.getAllByText('620.000,00 TRY')).toHaveLength(2);
-  }, 15_000); // Renders 500 table rows plus the diagram.
+    expect(screen.getByRole('columnheader', { name: 'Karşı taraf' })).toBeInTheDocument();
+  }, 15_000); // Renders 500 table rows plus the chart.
 
   it('shows an empty state and server validation errors', async () => {
     server.use(transactionsHandler([]), summaryHandler([]));

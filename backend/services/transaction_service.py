@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -7,6 +9,8 @@ from backend.repositories.transaction_repository import (
     SqlAlchemyTransactionRepository,
     TransactionFilters,
 )
+from backend.security import get_jwt_secret
+from backend.services.masking import mask_name
 
 
 class InvalidTransactionFilters(ValueError):
@@ -14,6 +18,21 @@ class InvalidTransactionFilters(ValueError):
 
 
 ROUTE_LIMIT = 200
+
+
+def make_account_ref(account_id: int) -> str:
+    """Opaque, signed handle for a counterparty account. The browser only sees
+    masked labels (K4), so the network graph expands a node with this instead
+    of the account number; the signature stops clients from probing ids."""
+    digest = hmac.new(get_jwt_secret().encode(), f"account:{account_id}".encode(), hashlib.sha256).hexdigest()
+    return f"{account_id}.{digest[:24]}"
+
+
+def resolve_account_ref(ref: str) -> int:
+    account_id, _, _ = ref.partition(".")
+    if not account_id.isdigit() or not hmac.compare_digest(make_account_ref(int(account_id)), ref):
+        raise InvalidTransactionFilters("Invalid account reference.")
+    return int(account_id)
 
 
 def mask_route_account(account_no: str) -> str:
@@ -62,8 +81,15 @@ class TransactionService:
         direction: str | None = None,
         min_amount: Decimal | None = None,
         max_amount: Decimal | None = None,
+        account_ref: str | None = None,
     ) -> dict[str, Any]:
         """K12: server-side totals over every matching transaction."""
+        if account_ref:
+            if customer_no or account_no:
+                raise InvalidTransactionFilters("Use either account_ref or customer_no/account_no.")
+            account_no = self._repository.account_no_for_id(resolve_account_ref(account_ref))
+            if account_no is None:
+                raise InvalidTransactionFilters("Invalid account reference.")
         self._validate(date_from, date_to, customer_no, account_no, direction, min_amount, max_amount)
         filters = TransactionFilters(
             date_from=date_from,
@@ -79,6 +105,13 @@ class TransactionService:
             viewed = [customer_no] if customer_no else self._repository.account_owner_numbers(account_no)
             self._repository.log_customer_views(actor_id, viewed, "transaction_analysis")
         focus = data["focus_account_ids"]
+        refs: dict[int, str] = {}
+
+        def _ref(account_id: int) -> str:
+            if account_id not in refs:
+                refs[account_id] = make_account_ref(account_id)
+            return refs[account_id]
+
         return {
             "transfer_count": data["transfer_count"],
             "account_count": data["account_count"],
@@ -97,10 +130,17 @@ class TransactionService:
                     "count": route["count"],
                     "amount": route["amount"],
                     "alert_linked": route["alert_linked"],
+                    # Masked owner names (K4): enough to tell counterparties apart.
+                    "sender_ref": _ref(route["sender_account_id"]),
+                    "receiver_ref": _ref(route["receiver_account_id"]),
+                    "sender_label": mask_name(*route["sender_owner"]),
+                    "receiver_label": mask_name(*route["receiver_owner"]),
+                    "alert_rules": route["alert_rules"],
                 }
                 for route in data["routes"]
             ],
-            "other_routes": data["other_routes"],
+            "other_routes": {**data["other_routes"], "by_currency": data["other_routes_amount"]},
+            "flow_timeline": data["flow_timeline"],
         }
 
     @staticmethod

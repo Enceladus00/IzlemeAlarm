@@ -10,8 +10,10 @@ from sqlalchemy.orm import Session, joinedload
 from backend.repositories.customer_view_log import log_customer_views
 from backend.models import (
     Account,
+    Alert,
     AlertTransaction,
     Customer,
+    MonitoringRule,
     Transaction,
 )
 
@@ -117,6 +119,9 @@ class SqlAlchemyTransactionRepository:
         )
         return total, transactions, linked_ids
 
+    def account_no_for_id(self, account_id: int) -> str | None:
+        return self._session.scalar(select(Account.account_no).where(Account.account_id == account_id))
+
     def account_owner_numbers(self, account_no: str) -> list[str]:
         return list(
             self._session.scalars(
@@ -211,15 +216,51 @@ class SqlAlchemyTransactionRepository:
             .order_by(route_amount.desc(), filtered.c.sender_account_id, filtered.c.receiver_account_id)
         ).all()
         shown = route_rows[:route_limit]
-        account_numbers = dict(
-            self._session.execute(
-                select(Account.account_id, Account.account_no).where(
-                    Account.account_id.in_(
-                        {row[0] for row in shown} | {row[1] for row in shown}
-                    )
+        account_rows = self._session.execute(
+            select(Account.account_id, Account.account_no, Customer.full_name, Customer.customer_type)
+            .join(Customer, Customer.customer_id == Account.customer_id)
+            .where(Account.account_id.in_({row[0] for row in shown} | {row[1] for row in shown}))
+        ).all() if shown else []
+        account_numbers = {row[0]: row[1] for row in account_rows}
+        account_owners = {row[0]: (row[2], row[3]) for row in account_rows}
+        # Which rules flagged transfers on each route (sender, receiver, currency).
+        route_rules: dict[tuple[int, int, str], list[str]] = {}
+        if shown:
+            for sender_id, receiver_id, currency, codes in self._session.execute(
+                select(
+                    filtered.c.sender_account_id,
+                    filtered.c.receiver_account_id,
+                    filtered.c.currency,
+                    func.array_agg(func.distinct(MonitoringRule.rule_code)),
                 )
-            ).all()
-        ) if shown else {}
+                .join(AlertTransaction, AlertTransaction.transaction_id == filtered.c.transaction_id)
+                .join(Alert, Alert.alert_id == AlertTransaction.alert_id)
+                .join(MonitoringRule, MonitoringRule.rule_id == Alert.rule_id)
+                .group_by(filtered.c.sender_account_id, filtered.c.receiver_account_id, filtered.c.currency)
+            ).all():
+                route_rules[(sender_id, receiver_id, currency)] = sorted(codes)
+        # Money in / out of the focus per time bucket and currency.
+        flow_timeline = []
+        if focus_ids:
+            flow_timeline = [
+                {"date": row[0].date(), "currency": row[1], "incoming": row[2] or 0, "outgoing": row[3] or 0}
+                for row in self._session.execute(
+                    select(
+                        bucket,
+                        filtered.c.currency,
+                        func.sum(filtered.c.amount).filter(
+                            filtered.c.receiver_account_id.in_(focus_ids),
+                            filtered.c.sender_account_id.not_in(focus_ids),
+                        ),
+                        func.sum(filtered.c.amount).filter(
+                            filtered.c.sender_account_id.in_(focus_ids),
+                            filtered.c.receiver_account_id.not_in(focus_ids),
+                        ),
+                    )
+                    .group_by(bucket, filtered.c.currency)
+                    .order_by(bucket, filtered.c.currency)
+                ).all()
+            ]
         rest = route_rows[route_limit:]
         return {
             "transfer_count": int(totals[0] or 0),
@@ -249,8 +290,21 @@ class SqlAlchemyTransactionRepository:
                     "count": int(row[3]),
                     "amount": row[4],
                     "alert_linked": int(row[5]),
+                    "sender_owner": account_owners.get(row[0], (None, None)),
+                    "receiver_owner": account_owners.get(row[1], (None, None)),
+                    "alert_rules": route_rules.get((row[0], row[1], row[2]), []),
                 }
                 for row in shown
+            ],
+            "flow_timeline": flow_timeline,
+            "other_routes_amount": [
+                {"currency": currency, "amount": total}
+                for currency, total in sorted(
+                    {
+                        currency: sum((row[4] for row in rest if row[2] == currency), Decimal("0"))
+                        for currency in {row[2] for row in rest}
+                    }.items()
+                )
             ],
             "other_routes": {
                 "route_count": len(rest),

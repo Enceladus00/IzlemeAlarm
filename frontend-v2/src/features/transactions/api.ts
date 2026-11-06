@@ -2,8 +2,8 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { apiRequest, type QueryValue } from '@/api/client';
 import { transactionPageSchema, transactionSummarySchema } from '@/api/schemas/transactions';
 
-/** The API caps GET /transactions at 500 per request. */
-export const TX_PAGE_SIZE = 500;
+/** Transfers per page in the list (the API allows up to 500). */
+export const TX_PAGE_SIZE = 50;
 
 type TxQuery = Record<string, QueryValue>;
 

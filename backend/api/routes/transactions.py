@@ -27,11 +27,13 @@ def transaction_summary(
     direction: str | None = Query(default=None, pattern="^(incoming|outgoing)$"),
     min_amount: Decimal | None = Query(default=None, gt=0),
     max_amount: Decimal | None = Query(default=None, gt=0),
+    account_ref: str | None = Query(default=None, max_length=64),
     user: AuthenticatedUser = Depends(require_permission("customer:view")),
     service: TransactionService = Depends(get_transaction_service),
 ) -> Any:
     try:
         return service.summary(
+            account_ref=account_ref,
             actor_id=user.user_id,
             date_from=date_from,
             date_to=date_to,
