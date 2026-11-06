@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# MCP server config (local only)
+.mcp.json
+
+# Neon agent skills (local only)
+.claude/skills/neon/
+skills-lock.json
