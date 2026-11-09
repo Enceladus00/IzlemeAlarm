@@ -34,6 +34,16 @@ export const auditEventSchema = z.object({
   entity_id: z.string().nullable(),
   details: z.unknown().nullable(),
   created_at: apiDateTime,
+  /** Every alert of a detection run's R17 raises; empty for one-row events. */
+  grouped: z
+    .array(
+      z.object({
+        audit_id: z.number(),
+        entity_id: z.string().nullable(),
+        details: z.record(z.string(), z.unknown()),
+      }),
+    )
+    .default([]),
 });
 export type AuditEvent = z.infer<typeof auditEventSchema>;
 export const auditPageSchema = pageSchema(auditEventSchema);

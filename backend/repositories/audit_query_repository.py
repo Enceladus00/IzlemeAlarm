@@ -1,10 +1,14 @@
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import Text, and_, case, cast, func, select
 from sqlalchemy.orm import Session
 
 from backend.models import AppRole, AppUser, AuditLog
+
+# One detection run can raise many alerts at once (R17). Each alert keeps its own
+# row, but the list shows a run's raises as a single event.
+GROUPED_ACTION = "alert.severity_raised"
 
 
 @dataclass(frozen=True)
@@ -24,7 +28,9 @@ class SqlAlchemyAuditQueryRepository:
 
     def list_events(
         self, offset: int, limit: int, filters: AuditFilters | None = None
-    ) -> tuple[int, list[tuple[AuditLog, str | None, str | None]]]:
+    ) -> tuple[int, list[tuple[AuditLog, str | None, str | None, list[AuditLog]]]]:
+        """Newest first. The last value of a row is the run's other raises: every
+        alert of a grouped event, or empty for an ordinary one-row event."""
         filters = filters or AuditFilters()
         conditions = []
         if filters.actor_id is not None:
@@ -43,19 +49,48 @@ class SqlAlchemyAuditQueryRepository:
             conditions.append(
                 AuditLog.created_at < datetime.combine(filters.date_to + timedelta(days=1), time.min)
             )
-        total = int(
-            self._session.scalar(
-                select(func.count()).select_from(AuditLog).where(*conditions)
-            )
-            or 0
+        run_id = AuditLog.details["run_id"].astext
+        group_key = case(
+            (and_(AuditLog.action == GROUPED_ACTION, run_id.is_not(None)), run_id),
+            else_=cast(AuditLog.audit_id, Text),
         )
+        # Each group is represented by its newest row, so paging counts events
+        # as the screen shows them.
+        groups = (
+            select(func.max(AuditLog.audit_id).label("audit_id"))
+            .where(*conditions)
+            .group_by(group_key)
+            .subquery()
+        )
+        total = int(self._session.scalar(select(func.count()).select_from(groups)) or 0)
         rows = self._session.execute(
             select(AuditLog, AppUser.username, AppRole.role_code)
+            .join(groups, groups.c.audit_id == AuditLog.audit_id)
             .outerjoin(AppUser, AppUser.user_id == AuditLog.actor_id)
             .outerjoin(AppRole, AppRole.role_id == AppUser.role_id)
-            .where(*conditions)
             .order_by(AuditLog.created_at.desc(), AuditLog.audit_id.desc())
             .offset(offset)
             .limit(limit)
         ).all()
-        return total, [(row[0], row[1], row[2]) for row in rows]
+
+        run_ids = {
+            row[0].details["run_id"]
+            for row in rows
+            if row[0].action == GROUPED_ACTION and "run_id" in row[0].details
+        }
+        members: dict[str, list[AuditLog]] = {}
+        if run_ids:
+            for event in self._session.scalars(
+                select(AuditLog)
+                .where(*conditions, AuditLog.action == GROUPED_ACTION, run_id.in_(run_ids))
+                .order_by(AuditLog.audit_id)
+            ):
+                members.setdefault(event.details["run_id"], []).append(event)
+
+        def grouped_with(event: AuditLog) -> list[AuditLog]:
+            if event.action != GROUPED_ACTION:
+                return []
+            group = members.get(event.details.get("run_id"), [])
+            return group if len(group) > 1 else []
+
+        return total, [(row[0], row[1], row[2], grouped_with(row[0])) for row in rows]

@@ -33,8 +33,20 @@ class AuditService:
     ) -> dict[str, Any]:
         total, rows = self._repository.list_events(offset, limit, filters)
         items = []
-        for event, actor_name, actor_role in rows:
+        for event, actor_name, actor_role, members in rows:
             entity_id, details = redact(event.action, event.entity_id, event.details, permissions)
+            grouped = []
+            for member in members:
+                member_entity_id, member_details = redact(
+                    member.action, member.entity_id, member.details, permissions
+                )
+                grouped.append(
+                    {
+                        "audit_id": member.audit_id,
+                        "entity_id": member_entity_id,
+                        "details": member_details,
+                    }
+                )
             items.append(
                 {
                     "audit_id": event.audit_id,
@@ -46,6 +58,7 @@ class AuditService:
                     "entity_id": entity_id,
                     "details": details,
                     "created_at": event.created_at,
+                    "grouped": grouped,
                 }
             )
         return {"total": total, "items": items}

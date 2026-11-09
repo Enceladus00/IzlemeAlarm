@@ -893,6 +893,7 @@ const en: Translation = {
     entity: 'Record',
     details: 'Details',
     showDetails: 'Show details',
+    groupCount: '{{count, number}} alerts',
     hideDetails: 'Hide details',
     system: 'System',
     unknownActor: 'User #{{id}}',

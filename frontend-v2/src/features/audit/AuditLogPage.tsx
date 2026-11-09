@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, History } from 'lucide-react';
 import { Fragment, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useSearchParams } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { apiRequest } from '@/api/client';
 import { auditPageSchema, type AuditEvent } from '@/api/schemas/users';
 import { useAuth } from '@/auth/auth-context';
@@ -68,6 +68,34 @@ function isoDaysAgo(days: number): string {
   const date = new Date();
   date.setDate(date.getDate() - days);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+/** The alerts behind one detection run's R17 event. */
+function GroupedRaises({ items, canOpenAlerts }: { items: AuditEvent['grouped']; canOpenAlerts: boolean }) {
+  const { t } = useTranslation();
+  const severity = (value: unknown) => t(`severity.${String(value) as 'low'}`, { defaultValue: String(value) });
+  return (
+    <ul className="divide-y divide-border rounded-md bg-surface-muted text-xs">
+      {items.map((item) => (
+        <li key={item.audit_id} className="flex flex-wrap items-center justify-between gap-3 px-3 py-1.5">
+          {canOpenAlerts ? (
+            <Link to={`/alerts/${item.entity_id}`} className="font-mono text-info hover:underline">
+              alert · {item.entity_id}
+            </Link>
+          ) : (
+            <span className="font-mono">alert · {item.entity_id}</span>
+          )}
+          <span>
+            {t('alertDetail.severityRaised', {
+              from: severity(item.details.old),
+              to: severity(item.details.new),
+              count: Number(item.details.K ?? 0),
+            })}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 interface AuditQuery {
@@ -269,8 +297,10 @@ export default function AuditLogPage() {
                 <tbody>
                   {items.map((event) => {
                     const expanded = open.has(event.audit_id);
-                    const traceAlertId = alertTraceId(event, can('alert:view'));
+                    const isGroup = event.grouped.length > 0;
+                    const traceAlertId = isGroup ? null : alertTraceId(event, can('alert:view'));
                     const hasDetails =
+                      isGroup ||
                       traceAlertId !== null ||
                       (event.details !== null && event.details !== undefined && !(typeof event.details === 'object' && Object.keys(event.details).length === 0));
                     return (
@@ -290,7 +320,11 @@ export default function AuditLogPage() {
                           </td>
                           <td className="px-3 py-2.5 font-mono text-xs">
                             {event.entity_type}
-                            {event.entity_id && <span className="text-muted"> · {event.entity_id}</span>}
+                            {isGroup ? (
+                              <span className="text-muted"> · {t('audit.groupCount', { count: event.grouped.length })}</span>
+                            ) : (
+                              event.entity_id && <span className="text-muted"> · {event.entity_id}</span>
+                            )}
                           </td>
                           <td className="px-5 py-2.5">
                             {hasDetails ? (
@@ -311,11 +345,17 @@ export default function AuditLogPage() {
                         {expanded && (
                           <tr className="border-b border-border">
                             <td colSpan={5} className="px-5 pb-3">
-                              <div id={`audit-details-${event.audit_id}`} className="grid gap-4 lg:grid-cols-2">
-                                <pre className="overflow-x-auto rounded-md bg-surface-muted p-3 font-mono text-xs">
-                                  {JSON.stringify(event.details, null, 2)}
-                                </pre>
-                                {traceAlertId !== null && <DecisionTrace alertId={traceAlertId} />}
+                              <div id={`audit-details-${event.audit_id}`} className={cn(!isGroup && 'grid gap-4 lg:grid-cols-2')}>
+                                {isGroup ? (
+                                  <GroupedRaises items={event.grouped} canOpenAlerts={can('alert:view')} />
+                                ) : (
+                                  <>
+                                    <pre className="overflow-x-auto rounded-md bg-surface-muted p-3 font-mono text-xs">
+                                      {JSON.stringify(event.details, null, 2)}
+                                    </pre>
+                                    {traceAlertId !== null && <DecisionTrace alertId={traceAlertId} />}
+                                  </>
+                                )}
                               </div>
                             </td>
                           </tr>

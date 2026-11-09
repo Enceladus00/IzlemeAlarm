@@ -2,6 +2,7 @@
 
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy import func, select
 
@@ -97,6 +98,38 @@ def test_audit_log_filters_names_and_redaction(client, users, factory):
     assert client.get(
         "/audit-log", params={"date_from": "2026-02-01", "date_to": "2026-01-01"}, headers=users["admin"]["headers"]
     ).status_code == 422
+
+
+def test_audit_log_groups_r17_raises_by_run(client, users, session, factory):
+    customer = factory.customer()
+    alerts = [factory.alert(customer, rule_code=code) for code in ("R01", "R05", "R06")]
+    factory.commit()
+    big_run, small_run = str(uuid4()), str(uuid4())
+    for alert, run_id in zip(alerts, (big_run, big_run, small_run)):
+        session.add(
+            AuditLog(
+                actor_id=None,
+                action="alert.severity_raised",
+                entity_type="alert",
+                entity_id=str(alert.alert_id),
+                details={"rule": "R17", "K": 2, "old": "low", "new": "medium", "run_id": run_id},
+            )
+        )
+    session.commit()
+    headers = users["compliance"]["headers"]
+    params = {"action": "alert.severity_raised", "limit": 500}
+
+    body = client.get("/audit-log", params=params, headers=headers).json()
+    by_run = {item["details"]["run_id"]: item for item in body["items"]}
+    assert len(body["items"]) == len(by_run) and body["total"] >= 2
+    assert [m["entity_id"] for m in by_run[big_run]["grouped"]] == [str(a.alert_id) for a in alerts[:2]]
+    assert by_run[small_run]["grouped"] == []
+
+    # Searching for one alert finds its own row, not the whole run.
+    single = client.get(
+        "/audit-log", params={**params, "entity_id": str(alerts[0].alert_id)}, headers=headers
+    ).json()
+    assert single["total"] == 1 and single["items"][0]["grouped"] == []
 
 
 def test_rule_change_requires_a_reason(client, users, session):

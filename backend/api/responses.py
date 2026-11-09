@@ -356,6 +356,12 @@ class RulePerformance(BaseModel):
 # --- Audit log ------------------------------------------------------------------
 
 
+class AuditGroupedEvent(BaseModel):
+    audit_id: int
+    entity_id: str | None
+    details: dict[str, Any]
+
+
 class AuditEvent(BaseModel):
     audit_id: int
     actor_id: int | None
@@ -366,6 +372,8 @@ class AuditEvent(BaseModel):
     entity_id: str | None
     details: dict[str, Any]
     created_at: datetime
+    # Set when this row stands for a whole detection run's R17 raises.
+    grouped: list[AuditGroupedEvent] = []
 
 
 class AuditLogPage(BaseModel):

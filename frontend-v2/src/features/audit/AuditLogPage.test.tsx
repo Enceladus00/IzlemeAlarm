@@ -15,6 +15,7 @@ const events: AuditEvent[] = Array.from({ length: 120 }, (_, index) => ({
   entity_id: index % 2 ? String(index) : null,
   details: index % 4 === 2 ? { username: 'ayse', permission: 'user:manage' } : {},
   created_at: '2026-11-03T12:12:02.106380',
+  grouped: [],
 }));
 
 const requests: URLSearchParams[] = [];
@@ -93,6 +94,46 @@ describe('Audit log', () => {
     await waitFor(() => expect(requests.at(-1)!.get('actor_id')).toBe('1'));
     await user.type(screen.getByLabelText('Kayıt'), 'C-1042{Enter}');
     await waitFor(() => expect(requests.at(-1)!.get('entity_id')).toBe('C-1042'));
+  });
+
+  it('shows a detection run\'s R17 raises as one expandable row', async () => {
+    const raise = (id: number, old: string, next: string) => ({
+      audit_id: id,
+      entity_id: String(id + 800),
+      details: { rule: 'R17', K: 2, old, new: next, run_id: 'run-1' },
+    });
+    server.use(
+      http.get(`${API}/audit-log`, () =>
+        HttpResponse.json({
+          total: 1,
+          items: [
+            {
+              audit_id: 2,
+              actor_id: null,
+              actor_name: null,
+              actor_role: null,
+              action: 'alert.severity_raised',
+              entity_type: 'alert',
+              entity_id: '802',
+              details: { rule: 'R17', K: 2, old: 'medium', new: 'high', run_id: 'run-1' },
+              created_at: '2026-11-06T11:27:00',
+              grouped: [raise(1, 'low', 'medium'), raise(2, 'medium', 'high')],
+            },
+          ],
+        }),
+      ),
+    );
+    storeSession('admin');
+    const { user } = renderApp('/audit');
+    const table = await screen.findByRole('table', { name: 'Denetim kaydı' });
+    expect(within(table).getAllByText('Alarm önemi yükseltildi (R17)')).toHaveLength(1);
+    expect(within(table).getByText(/2 alarm/)).toBeInTheDocument();
+
+    await user.click(within(table).getByRole('button', { name: 'Ayrıntıları göster' }));
+    expect(within(table).getByRole('link', { name: 'alert · 801' })).toHaveAttribute('href', '/alerts/801');
+    expect(within(table).getByRole('link', { name: 'alert · 802' })).toBeInTheDocument();
+    expect(within(table).getByText(/Düşük → Orta/)).toBeInTheDocument();
+    expect(within(table).queryByRole('region', { name: 'Bu kararın izi' })).not.toBeInTheDocument();
   });
 
   it('shows an empty log', async () => {

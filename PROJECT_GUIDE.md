@@ -492,7 +492,7 @@ a test fails if a backend message has none (`tests/test_error_translations.py`).
 | **Administration** | | |
 | `GET /users`, `GET /users/roles`, `POST /users`, `PATCH /users/{id}` | `user:manage` | User management. |
 | `GET /admin/system-overview` | `user:manage` | Health, schema revision, rule engine, volumes, security settings (numbers only). |
-| `GET /audit-log` | `audit:view` | Filtered audit events (`action`, `exclude_action`, actor, record, dates). The screen hides `customer.viewed` by default. |
+| `GET /audit-log` | `audit:view` | Filtered audit events (`action`, `exclude_action`, actor, record, dates). The screen hides `customer.viewed` by default. A detection run's R17 raises are returned as one event with the alerts in `grouped`; each alert keeps its own stored row. |
 | **Demo** | | |
 | `GET /demo/status` | `dashboard:view` | Demo fixture inventory and scenarios. |
 | `POST /demo/seed` | `upload:create` + `ENABLE_DEMO_ENDPOINTS=true` | Seed the demo data and evaluate it (404 when disabled). |

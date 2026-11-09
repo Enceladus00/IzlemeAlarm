@@ -892,6 +892,7 @@ const tr = {
     entity: 'Kayıt',
     details: 'Ayrıntılar',
     showDetails: 'Ayrıntıları göster',
+    groupCount: '{{count, number}} alarm',
     hideDetails: 'Ayrıntıları gizle',
     system: 'Sistem',
     unknownActor: 'Kullanıcı #{{id}}',
