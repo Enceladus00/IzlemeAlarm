@@ -303,6 +303,13 @@ decision form, the history (with who did what) and the customer's other alerts.
   readable in its developer tools. Individuals: `Ömer Kılıç` → `Ö. Kılıç`;
   companies: `Nehir Lojistik A.Ş.` → `Nehir L. A.`; account numbers: `…7781`.
   Users with `customer:view` receive full values on the alert detail page.
+- **Rate limits** (`backend/rate_limit.py`) answer 429 with `Retry-After`.
+  Login: 5 failures per account + address and 30 per address in 15 minutes,
+  checked before the password; the first refusal of a block writes one
+  `LOGIN_RATE_LIMITED` audit row. Per user: 300 requests a minute overall,
+  10 uploads, 10 demo seeds and 20 rule evaluations an hour. Counters live in
+  memory, so they reset on restart, and running several tasks needs shared
+  storage first.
 - **Every view of a customer's personal data writes a `customer.viewed` audit
   row** (BDDK information-systems regulation, article 13). Repeat views of the
   same customer by the same user within 30 minutes are not logged again. If the
@@ -622,6 +629,7 @@ Read from `.env` (or the process environment). Never commit `.env`.
 | --- | --- | --- |
 | `DATABASE_URL` | API, Alembic, integration tests | PostgreSQL URL, e.g. `postgresql+psycopg2://USER:PASSWORD@localhost:5432/izleme_alarm`. Required. |
 | `JWT_SECRET` | API | Token signing key; long and random. Required. |
+| `PROXY_SHARED_SECRET` | API + nginx | Proves to the rate limits that a client address came from nginx; same value on both. Only needed behind nginx. |
 | `ENABLE_DEMO_ENDPOINTS` | API | `true` enables `POST /demo/seed`. Default `false`; development only. |
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | `create_admin` | Optional; otherwise the script asks. |
 | `VITE_API_PROXY_TARGET` | React dev server | Where `/api` goes. Default `http://127.0.0.1:8000`. |

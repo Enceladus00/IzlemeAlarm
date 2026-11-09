@@ -26,6 +26,9 @@ export function useServerMessage(): (error: unknown) => string {
   const { t, i18n } = useTranslation();
   return (error: unknown) => {
     if (error instanceof ApiError) {
+      if (error.kind === 'rateLimited' && error.retryAfter) {
+        return t('errors.rateLimitedWait', { minutes: Math.ceil(error.retryAfter / 60) });
+      }
       const bundle = i18n.getResourceBundle(i18n.resolvedLanguage ?? 'tr', 'translation');
       return (error.detail && lookup(bundle, error.detail)) || t(`errors.${error.kind}`);
     }

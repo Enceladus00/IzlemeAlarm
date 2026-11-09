@@ -1,5 +1,14 @@
 # Rendered by the nginx image at start-up (envsubst on the environment:
-# PORT, API_UPSTREAM, and NGINX_LOCAL_RESOLVERS from the container's resolv.conf).
+# PORT, API_UPSTREAM, PROXY_SHARED_SECRET, and NGINX_LOCAL_RESOLVERS from the
+# container's resolv.conf).
+
+# The load balancer in front of nginx writes the caller's address last; anything
+# before it in the header is whatever the caller sent.
+map $http_x_forwarded_for $client_address {
+    "~(?:^|,)\s*(?<rightmost>[^,\s]+)\s*$" $rightmost;
+    default $remote_addr;
+}
+
 server {
     listen ${PORT};
     server_name _;
@@ -32,6 +41,10 @@ server {
         proxy_set_header Host $proxy_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # For the API's rate limits. Always set here, so a caller's own values
+        # never reach the API; the secret proves the address came from nginx.
+        proxy_set_header X-Client-Address $client_address;
+        proxy_set_header X-Proxy-Secret "${PROXY_SHARED_SECRET}";
         # CSV uploads are limited to 5 MB by the API; allow multipart overhead.
         client_max_body_size 6m;
         proxy_read_timeout 120s;

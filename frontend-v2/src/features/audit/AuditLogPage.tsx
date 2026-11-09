@@ -26,6 +26,7 @@ const PAGE_SIZES = [50, 100, 200] as const;
 const KNOWN_ACTIONS = [
   'LOGIN_SUCCESS',
   'LOGIN_FAILED',
+  'LOGIN_RATE_LIMITED',
   'ACCESS_DENIED',
   'USER_CREATED',
   'USER_UPDATED',
@@ -43,6 +44,7 @@ const KNOWN_ACTIONS = [
 const ACTION_TONE: Record<string, 'success' | 'danger' | 'info' | 'neutral'> = {
   LOGIN_SUCCESS: 'success',
   LOGIN_FAILED: 'danger',
+  LOGIN_RATE_LIMITED: 'danger',
   ACCESS_DENIED: 'danger',
   USER_CREATED: 'info',
   USER_UPDATED: 'info',

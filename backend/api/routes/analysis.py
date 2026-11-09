@@ -7,6 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from backend.api.dependencies import (
     get_analysis_service,
     get_demo_service,
+    rate_limited,
     require_permission,
 )
 from backend.api.responses import (
@@ -15,6 +16,7 @@ from backend.api.responses import (
     RulePerformance,
     SystemOverview,
 )
+from backend.rate_limit import DEMO_SEED_RATE
 from backend.services.demo_service import DemoService
 from backend.services.analysis_service import AnalysisService
 from backend.services.auth_service import AuthenticatedUser
@@ -96,6 +98,7 @@ def system_overview(
 def seed_demo(
     use_saved_rules: bool = False,
     user: AuthenticatedUser = Depends(require_permission("upload:create")),
+    _rate: None = Depends(rate_limited("demo-seed", DEMO_SEED_RATE)),
     service: DemoService = Depends(get_demo_service),
 ) -> dict[str, Any]:
     if os.getenv("ENABLE_DEMO_ENDPOINTS", "").lower() != "true":

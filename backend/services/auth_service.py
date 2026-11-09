@@ -1,6 +1,8 @@
+import logging
 from dataclasses import dataclass
 
 import jwt
+from sqlalchemy.exc import SQLAlchemyError
 
 from backend.models import AppUser
 from backend.repositories.audit_repository import AuditLogRepository
@@ -11,6 +13,9 @@ from backend.security import (
     perform_dummy_password_check,
     verify_password,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -71,6 +76,18 @@ class AuthService:
             details={"username": user.username},
         )
         return create_access_token(user.user_id)
+
+    def record_login_blocked(self, scope: str, address: str) -> None:
+        # The attempted username is not stored, as for LOGIN_FAILED. A failed
+        # audit write must not turn the block into an error.
+        try:
+            self._audit.write_event(
+                action="LOGIN_RATE_LIMITED",
+                entity_type="auth",
+                details={"scope": scope, "address": address},
+            )
+        except SQLAlchemyError:
+            logger.exception("Could not audit a login rate-limit block.")
 
     def user_from_token(self, token: str) -> AuthenticatedUser:
         user_id = decode_access_token(token)

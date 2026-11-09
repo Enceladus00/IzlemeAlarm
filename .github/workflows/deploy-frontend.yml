@@ -15,6 +15,7 @@ permissions:
 
 env:
   AWS_REGION: eu-north-1
+  AWS_ACCOUNT_ID: "299362456172"
   ECR_REPOSITORY: izlemealarm-frontend
   ECS_CLUSTER: default
   ECS_SERVICE: izlemealarm-frontend
@@ -95,6 +96,10 @@ jobs:
             [
               {"name": "PORT", "value": "8080"},
               {"name": "API_UPSTREAM", "value": "${{ vars.SERVICE_URL }}"}
+            ]
+          secrets: |
+            [
+              {"name": "PROXY_SHARED_SECRET", "valueFrom": "arn:aws:ssm:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:parameter/izlemealarm-backend/PROXY_SHARED_SECRET"}
             ]
 
       # /api/health goes through nginx to the backend, so this also proves the proxy.

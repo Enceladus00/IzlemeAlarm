@@ -10,6 +10,7 @@ export type ApiErrorKind =
   | 'notFound'
   | 'conflict'
   | 'tooLarge'
+  | 'rateLimited'
   | 'validation'
   | 'unavailable'
   | 'invalidResponse'
@@ -29,6 +30,8 @@ export class ApiError extends Error {
   readonly fieldErrors: ApiFieldError[];
   /** POST /alerts/decisions names the alert that failed a check. */
   readonly alertId: number | null;
+  /** 429 responses: seconds until the API accepts this request again. */
+  readonly retryAfter: number | null;
 
   constructor(options: {
     status: number;
@@ -36,6 +39,7 @@ export class ApiError extends Error {
     detail?: string | null;
     fieldErrors?: ApiFieldError[];
     alertId?: number | null;
+    retryAfter?: number | null;
   }) {
     super(options.detail ?? options.kind);
     this.name = 'ApiError';
@@ -44,6 +48,7 @@ export class ApiError extends Error {
     this.detail = options.detail ?? null;
     this.fieldErrors = options.fieldErrors ?? [];
     this.alertId = options.alertId ?? null;
+    this.retryAfter = options.retryAfter ?? null;
   }
 }
 
@@ -53,6 +58,7 @@ export function kindForStatus(status: number): ApiErrorKind {
   if (status === 404) return 'notFound';
   if (status === 409) return 'conflict';
   if (status === 413) return 'tooLarge';
+  if (status === 429) return 'rateLimited';
   if (status === 422 || status === 400) return 'validation';
   if (status === 503 || status === 502 || status === 504) return 'unavailable';
   return 'unexpected';
@@ -184,6 +190,7 @@ export async function apiRequest<T = unknown>(
     throw new ApiError({
       status: response.status,
       kind: kindForStatus(response.status),
+      retryAfter: Number(response.headers.get('Retry-After')) || null,
       ...parsed,
     });
   }

@@ -148,6 +148,7 @@ Konteyner içinden `localhost` konteynerin kendisidir; host'taki PostgreSQL içi
 | --- | --- | --- |
 | `DATABASE_URL` | API, Alembic, entegrasyon testleri | PostgreSQL adresi, ör. `postgresql+psycopg2://KULLANICI:PAROLA@localhost:5432/izleme_alarm`. Zorunlu. |
 | `JWT_SECRET` | API | Token imzalama anahtarı; uzun ve rastgele. Zorunlu. |
+| `PROXY_SHARED_SECRET` | API + nginx | Hız sınırlarında istemci adresinin nginx'ten geldiğini kanıtlar; iki tarafta aynı olmalı. Yalnızca nginx arkasında gerekir. |
 | `ENABLE_DEMO_ENDPOINTS` | API | `true` ise demo verisi oluşturulabilir. Varsayılan `false`; yalnızca geliştirmede açın. |
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | `create_admin` | İsteğe bağlı; yoksa betik sorar. |
 | `VITE_API_PROXY_TARGET` | Vite geliştirme sunucusu | `/api` isteklerinin hedefi. Varsayılan `http://127.0.0.1:8000`. |
@@ -324,6 +325,7 @@ Inside a container, `localhost` is the container itself; use `host.docker.intern
 | --- | --- | --- |
 | `DATABASE_URL` | API, Alembic, integration tests | PostgreSQL URL, e.g. `postgresql+psycopg2://USER:PASSWORD@localhost:5432/izleme_alarm`. Required. |
 | `JWT_SECRET` | API | Token signing key; long and random. Required. |
+| `PROXY_SHARED_SECRET` | API + nginx | Proves to the rate limits that a client address came from nginx; same value on both. Only needed behind nginx. |
 | `ENABLE_DEMO_ENDPOINTS` | API | `true` allows seeding demo data. Default `false`; development only. |
 | `ADMIN_USERNAME`, `ADMIN_PASSWORD` | `create_admin` | Optional; otherwise the script asks. |
 | `VITE_API_PROXY_TARGET` | Vite dev server | Where `/api` requests go. Default `http://127.0.0.1:8000`. |

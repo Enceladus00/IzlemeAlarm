@@ -4,6 +4,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
+from backend.rate_limit import GENERAL_RATE, limiter
 from backend.repositories.audit_repository import AuditLogRepository
 from backend.repositories.auth_repository import SqlAlchemyAuthRepository
 from backend.repositories.alert_repository import SqlAlchemyAlertRepository
@@ -45,6 +46,20 @@ def get_audit_service(db: Session = Depends(get_db)) -> AuditService:
     return AuditService(SqlAlchemyAuditQueryRepository(db))
 
 
+def too_many_requests(retry_after: int) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="Too many requests. Please try again later.",
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+def _enforce_rate(name: str, user_id: int, rate: tuple[int, int]) -> None:
+    decision = limiter.acquire(f"{name}:{user_id}", *rate)
+    if not decision.allowed:
+        raise too_many_requests(decision.retry_after)
+
+
 def get_current_user(
     token: str | None = Depends(oauth2_scheme),
     service: AuthService = Depends(get_auth_service),
@@ -56,13 +71,25 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        return service.user_from_token(token)
+        user = service.user_from_token(token)
     except jwt.PyJWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired authentication token.",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+    _enforce_rate("general", user.user_id, GENERAL_RATE)
+    return user
+
+
+def rate_limited(name: str, rate: tuple[int, int]):
+    """A per-user limit for one costly endpoint. Declare it after the permission
+    dependency, so that a refused user uses up nothing."""
+
+    def rate_dependency(user: AuthenticatedUser = Depends(get_current_user)) -> None:
+        _enforce_rate(name, user.user_id, rate)
+
+    return rate_dependency
 
 
 def require_permission(permission_code: str):

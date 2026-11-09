@@ -6,10 +6,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from backend.api.dependencies import (
     get_detection_service,
     get_rule_service,
+    rate_limited,
     require_permission,
 )
 from backend.api.responses import RuleHistoryEntry, RuleView
 from backend.api_schemas import RuleUpdate
+from backend.rate_limit import RULE_EVALUATION_RATE
 from backend.services.detection_service import DetectionService
 from backend.services.rule_service import (
     InvalidRuleThresholds,
@@ -75,6 +77,7 @@ def update_rule(
 @router.post("/rules/evaluate")
 def run_rules(
     user: AuthenticatedUser = Depends(require_permission("rule:edit")),
+    _rate: None = Depends(rate_limited("rule-evaluation", RULE_EVALUATION_RATE)),
     service: DetectionService = Depends(get_detection_service),
 ) -> dict[str, int]:
     try:

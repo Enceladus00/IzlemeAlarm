@@ -2,8 +2,9 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 
-from backend.api.dependencies import get_upload_service, require_permission
+from backend.api.dependencies import get_upload_service, rate_limited, require_permission
 from backend.api.responses import UploadReport, UploadSummary
+from backend.rate_limit import UPLOAD_RATE
 from backend.services.upload_service import UploadService
 from backend.services.auth_service import AuthenticatedUser
 
@@ -16,6 +17,7 @@ async def upload_csv(
     entity: str = Query(pattern="^(customer|account|transaction)$"),
     file: UploadFile = File(...),
     user: AuthenticatedUser = Depends(require_permission("upload:create")),
+    _rate: None = Depends(rate_limited("upload", UPLOAD_RATE)),
     service: UploadService = Depends(get_upload_service),
 ) -> dict[str, Any]:
     return await service.upload(entity, file, user.user_id)

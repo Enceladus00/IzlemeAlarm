@@ -113,7 +113,8 @@ jobs:
           secrets: |
             [
               {"name": "DATABASE_URL", "valueFrom": "arn:aws:ssm:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:parameter/izlemealarm-backend/DATABASE_URL"},
-              {"name": "JWT_SECRET", "valueFrom": "arn:aws:ssm:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:parameter/izlemealarm-backend/JWT_SECRET"}
+              {"name": "JWT_SECRET", "valueFrom": "arn:aws:ssm:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:parameter/izlemealarm-backend/JWT_SECRET"},
+              {"name": "PROXY_SHARED_SECRET", "valueFrom": "arn:aws:ssm:${{ env.AWS_REGION }}:${{ env.AWS_ACCOUNT_ID }}:parameter/izlemealarm-backend/PROXY_SHARED_SECRET"}
             ]
 
       - name: Smoke test

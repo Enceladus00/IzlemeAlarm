@@ -52,6 +52,15 @@ describe('apiRequest', () => {
     expect(unauthorized).toHaveBeenCalledTimes(1);
   });
 
+  it('maps 429 and reads how long to wait', async () => {
+    server.use(
+      http.get(`${API}/busy`, () =>
+        HttpResponse.json({ detail: 'Too many requests. Please try again later.' }, { status: 429, headers: { 'Retry-After': '120' } }),
+      ),
+    );
+    await expect(apiRequest('/busy')).rejects.toMatchObject({ kind: 'rateLimited', retryAfter: 120 });
+  });
+
   it('maps 403 and keeps the server detail', async () => {
     server.use(
       http.get(`${API}/forbidden`, () =>
