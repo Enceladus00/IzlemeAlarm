@@ -1,9 +1,10 @@
 name: CI
 
 # Runs the tests on every push and pull request. It never touches AWS, except:
-# on main, when the repository variable AUTO_DEPLOY is "true" and the push
-# changed something the backend depends on, the last job hands over to
-# deploy.yml. With AUTO_DEPLOY "false" (or unset) that job is always skipped.
+# on main, when the repository variable AUTO_DEPLOY is "true", the last jobs
+# hand over to deploy.yml if the push changed the backend and to
+# deploy-frontend.yml if it changed the frontend. With AUTO_DEPLOY "false"
+# (or unset) those jobs are always skipped.
 # Switch: gh variable set AUTO_DEPLOY --body true   (or false)
 on:
   push:
@@ -22,16 +23,19 @@ jobs:
   tests:
     uses: ./.github/workflows/tests.yml
 
-  # Did this push to main touch the backend?
+  # Did this push to main touch the backend or the frontend?
   changes:
-    name: Detect backend changes
+    name: Detect deployable changes
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AUTO_DEPLOY == 'true'
     runs-on: ubuntu-latest
     outputs:
       backend: ${{ steps.diff.outputs.backend }}
+      frontend: ${{ steps.diff.outputs.frontend }}
     env:
       # Anything that ends up in the backend image or the production schema.
       BACKEND_PATHS: '^(backend/|alembic/|alembic\.ini$|database/|Dockerfile\.backend$)'
+      # Anything that ends up in the frontend image.
+      FRONTEND_PATHS: '^(frontend-v2/|Dockerfile\.frontend-v2(\.dockerignore)?$)'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -40,9 +44,11 @@ jobs:
         env:
           BEFORE: ${{ github.event.before }}
         run: |
-          # A first push has no "before" commit: treat it as a backend change.
+          # A first push has no "before" commit: treat it as a change to both.
           if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
-            echo "backend=true" >> "$GITHUB_OUTPUT"; exit 0
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
           echo "Changed files:"; echo "$changed"
@@ -51,10 +57,27 @@ jobs:
           else
             echo "backend=false" >> "$GITHUB_OUTPUT"
           fi
+          if echo "$changed" | grep -qE "$FRONTEND_PATHS"; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend=false" >> "$GITHUB_OUTPUT"
+          fi
 
   auto-deploy:
-    name: Auto-deploy (AUTO_DEPLOY=true only)
+    name: Auto-deploy backend (AUTO_DEPLOY=true only)
     needs: [tests, changes]
     if: needs.changes.outputs.backend == 'true'
     uses: ./.github/workflows/deploy.yml
+    secrets: inherit
+
+  # Runs after the backend when both changed, so the new interface never calls
+  # an API that isn't there yet; skipped if that backend deploy failed.
+  auto-deploy-frontend:
+    name: Auto-deploy frontend (AUTO_DEPLOY=true only)
+    needs: [tests, changes, auto-deploy]
+    if: >-
+      always() && needs.tests.result == 'success' &&
+      needs.changes.outputs.frontend == 'true' &&
+      (needs.auto-deploy.result == 'success' || needs.auto-deploy.result == 'skipped')
+    uses: ./.github/workflows/deploy-frontend.yml
     secrets: inherit

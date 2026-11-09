@@ -1,0 +1,113 @@
+name: Deploy frontend
+
+# Every run of this workflow is a production deployment of the React interface
+# (build image → ECR → ECS). It starts only:
+#   * manually: Actions tab → "Deploy frontend" → "Run workflow" (deploys main), or
+#   * from CI on a push to main, when the repository variable AUTO_DEPLOY is
+#     "true" and the push changed the frontend (see ci.yml).
+# Pushing code never starts it while AUTO_DEPLOY is "false".
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: eu-north-1
+  ECR_REPOSITORY: izlemealarm-frontend
+  ECS_CLUSTER: default
+  ECS_SERVICE: izlemealarm-frontend
+
+jobs:
+  tests:
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/tests.yml
+
+  deploy:
+    name: Build and deploy
+    needs: [tests]
+    # Manual run: its own tests must pass. Called from CI: CI already ran them,
+    # so "tests" is skipped here.
+    if: >-
+      always() && github.ref == 'refs/heads/main' &&
+      (needs.tests.result == 'success' ||
+       (needs.tests.result == 'skipped' && github.event_name != 'workflow_dispatch'))
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-frontend
+      cancel-in-progress: false # never stop a deploy halfway
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      # Same least-privilege IAM user as the backend (see deploy.yml).
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: image
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+        run: |
+          docker build -f Dockerfile.frontend-v2 -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      # Every setting is passed explicitly: the action does not document whether
+      # omitted values keep their current setting or fall back to Express defaults
+      # (port 80, health check /ping).
+      - name: Deploy to ECS Express
+        id: deploy
+        uses: aws-actions/amazon-ecs-deploy-express-service@v1
+        with:
+          cluster: ${{ env.ECS_CLUSTER }}
+          service-name: ${{ env.ECS_SERVICE }}
+          image: ${{ steps.image.outputs.uri }}
+          execution-role-arn: ${{ vars.ECS_EXECUTION_ROLE_ARN }}
+          infrastructure-role-arn: ${{ vars.ECS_INFRASTRUCTURE_ROLE_ARN }}
+          container-port: 8080
+          cpu: 256
+          memory: 512
+          health-check-path: /
+          subnets: ${{ vars.ECS_SUBNETS }}
+          # The service's own group, not the backend's (ECS_SECURITY_GROUPS allows
+          # only port 8000). Unset on the very first deploy: Express then creates
+          # the group and its load balancer rules; save its id in this variable.
+          security-groups: ${{ vars.FRONTEND_SECURITY_GROUPS }}
+          log-group: /aws/ecs/default/izlemealarm-frontend
+          log-stream-prefix: ecs
+          min-task-count: 1
+          max-task-count: 1
+          auto-scaling-metric: REQUEST_COUNT_PER_TARGET
+          auto-scaling-target-value: 1
+          environment-variables: |
+            [
+              {"name": "PORT", "value": "8080"},
+              {"name": "API_UPSTREAM", "value": "${{ vars.SERVICE_URL }}"}
+            ]
+
+      # /api/health goes through nginx to the backend, so this also proves the proxy.
+      - name: Smoke test
+        env:
+          ENDPOINT: ${{ steps.deploy.outputs.endpoint }}
+        run: |
+          if [ -z "$ENDPOINT" ]; then
+            echo "::error::The deploy action returned no service endpoint"; exit 1
+          fi
+          url="https://${ENDPOINT#https://}"
+          url="${url%/}"
+          echo "Frontend URL: $url"
+          echo "Frontend URL: $url" >> "$GITHUB_STEP_SUMMARY"
+          curl --fail --silent --show-error --retry 5 --retry-delay 10 --retry-all-errors --output /dev/null "$url/"
+          curl --fail --silent --show-error --retry 5 --retry-delay 10 --retry-all-errors "$url/api/health"

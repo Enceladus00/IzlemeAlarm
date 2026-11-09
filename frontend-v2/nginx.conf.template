@@ -1,4 +1,5 @@
-# Rendered by the nginx image at start-up (envsubst on PORT and API_UPSTREAM only).
+# Rendered by the nginx image at start-up (envsubst on the environment:
+# PORT, API_UPSTREAM, and NGINX_LOCAL_RESOLVERS from the container's resolv.conf).
 server {
     listen ${PORT};
     server_name _;
@@ -12,7 +13,21 @@ server {
     # Same-origin API: /api/* is forwarded to FastAPI without the /api prefix,
     # so the backend needs no CORS configuration.
     location /api/ {
-        proxy_pass ${API_UPSTREAM}/;
+        # A variable makes nginx re-resolve the name at run time; a load
+        # balancer's IPs change, and a literal would be resolved only at start-up.
+        # A variable also stops proxy_pass replacing the prefix, hence the rewrite.
+        resolver ${NGINX_LOCAL_RESOLVERS} valid=30s ipv6=off;
+        set $api_upstream ${API_UPSTREAM};
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass $api_upstream;
+
+        # Only used when API_UPSTREAM is https: the API behind a shared load
+        # balancer needs SNI, and tokens must only go to a verified certificate.
+        proxy_ssl_server_name on;
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 3;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+
         proxy_http_version 1.1;
         proxy_set_header Host $proxy_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
