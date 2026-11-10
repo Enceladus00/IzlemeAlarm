@@ -6,7 +6,12 @@ from typing import Any
 
 from backend.detection.metadata import ParameterSpec, RawRuleResult, RuleDefinition, RuleStrategy
 from backend.detection.parameters import R05Values
-from backend.detection.rules.common import median_and_mad, prior_day_start
+from backend.detection.rules.common import (
+    median_and_mad,
+    meets_minimum,
+    minimum_amounts,
+    prior_day_start,
+)
 from backend.models import Customer, Transaction
 
 
@@ -28,6 +33,7 @@ class UnusualAmountRule(RuleStrategy):
             ParameterSpec("kappa", "decimal", "weight", "Prior strength of peer-group baseline.", True),
             ParameterSpec("mad_floor", "decimal", "log amount", "Minimum robust dispersion to prevent unstable z-scores.", True),
             ParameterSpec("income_bands", "integer", "bands", "Number of equal-count income groups within each customer type.", True),
+            ParameterSpec("limits", "map[currency, decimal]", "currency", "Optional minimum amount; today's transactions below it, or in a currency without a minimum, are not evaluated.", False),
             ParameterSpec("x_esik", "decimal", "robust z-score", "Score anchor at 0.5.", True),
             ParameterSpec("x_kesin", "decimal", "robust z-score", "Score anchor at 0.9.", True),
         ),
@@ -108,8 +114,19 @@ class UnusualAmountRule(RuleStrategy):
                 for (customer_id, _currency), customer_logs in logs.items()
                 if customer_id == customer.customer_id
             )
+            minimums = minimum_amounts(values)
+            below_minimum_count = 0
+            unlisted_currency_count = 0
             for transaction in today[customer.customer_id]:
                 if transaction.amount <= 0:
+                    continue
+                if not meets_minimum(transaction, minimums):
+                    # Too small to be worth an alert, or no minimum is configured
+                    # for its currency: not evaluated (history still uses it).
+                    if transaction.currency in minimums:
+                        below_minimum_count += 1
+                    else:
+                        unlisted_currency_count += 1
                     continue
                 own_logs = logs[(customer.customer_id, transaction.currency)]
                 own_median, own_mad = (
@@ -184,6 +201,13 @@ class UnusualAmountRule(RuleStrategy):
                             "today_start": today_start.isoformat(),
                             "history_count": total_history_count,
                             "today_count": len(today[customer.customer_id]),
+                            "minimum_amounts": (
+                                {currency: str(amount) for currency, amount in minimums.items()}
+                                if minimums is not None
+                                else None
+                            ),
+                            "below_minimum_transaction_count": below_minimum_count,
+                            "unlisted_currency_transaction_count": unlisted_currency_count,
                         }},
                         {"step": 2, "text": self.definition.steps[1], "status": "completed", "details": {
                             **baseline_details,
@@ -204,6 +228,7 @@ class UnusualAmountRule(RuleStrategy):
                     x_esik=Decimal(str(values["x_esik"])),
                     x_kesin=Decimal(str(values["x_kesin"])),
                     force_zero=suppress,
+                    ignored_currency_count=unlisted_currency_count,
                 )
             )
         return results

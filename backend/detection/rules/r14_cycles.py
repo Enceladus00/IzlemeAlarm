@@ -5,7 +5,11 @@ from typing import Any
 
 from backend.detection.metadata import ParameterSpec, RawRuleResult, RuleDefinition, RuleStrategy
 from backend.detection.parameters import R14Values
-from backend.detection.rules.common import calendar_window_start
+from backend.detection.rules.common import (
+    calendar_window_start,
+    meets_minimum,
+    minimum_amounts,
+)
 from backend.detection.scoring import calculate_score
 from backend.models import Customer, Transaction
 
@@ -29,6 +33,7 @@ class CyclePingPongRule(RuleStrategy):
             ParameterSpec("min_retained", "decimal", "ratio", "Minimum last amount / first amount for a cycle.", True),
             ParameterSpec("pingpong_tolerance", "decimal", "relative difference", "Maximum relative difference between forward and reverse amounts.", True),
             ParameterSpec("cash_accounts", "account ID list", "account_id", "Accounts excluded as cash/custody nodes.", False),
+            ParameterSpec("limits", "map[currency, decimal]", "currency", "Optional minimum amount of a cycle's first transaction and of a ping-pong forward transaction; other currencies are not counted.", False),
             ParameterSpec("x_esik", "integer", "ping-pong pairs", "Score anchor at 0.5.", True),
             ParameterSpec("x_kesin", "integer", "ping-pong pairs", "Score anchor at 0.9.", True),
         ),
@@ -118,7 +123,12 @@ class CyclePingPongRule(RuleStrategy):
                     visited_accounts | {candidate.receiver_account_id},
                 )
 
+        # A path only extends forward in time, so the starting transaction is the
+        # cycle's first one: small cycles are never searched.
+        minimums = minimum_amounts(values)
         for tx in eligible:
+            if not meets_minimum(tx, minimums):
+                continue
             walk(
                 [tx],
                 {tx.transaction_id},
@@ -133,6 +143,8 @@ class CyclePingPongRule(RuleStrategy):
             reverse_txs = pair_transactions.get((receiver_id, sender_id, currency), [])
             used_reverse: set[int] = set()
             for forward in forward_txs:
+                if not meets_minimum(forward, minimums):
+                    continue
                 reverse = next(
                     (
                         tx
@@ -196,6 +208,11 @@ class CyclePingPongRule(RuleStrategy):
                         {"step": 1, "text": self.definition.steps[0], "status": "completed", "details": {
                             "window_start": start.isoformat(),
                             "eligible_transaction_count": len(eligible),
+                            "minimum_amounts": (
+                                {currency: str(amount) for currency, amount in minimums.items()}
+                                if minimums is not None
+                                else None
+                            ),
                         }},
                         {"step": 2, "text": self.definition.steps[1], "status": "completed", "details": {
                             "cycle_length_limit": max_length,

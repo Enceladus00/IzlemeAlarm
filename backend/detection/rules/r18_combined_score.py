@@ -14,6 +14,8 @@ from backend.models import Customer, Transaction
 
 EXCLUDED_FROM_COMBINATION = frozenset({"R17", "R18"})
 SCORE_QUANTUM = Decimal("0.0001")
+SINGLE_RULE_ALERT_SCORE = Decimal("0.5")
+SUPPRESSED_NOTE = "Tek kural zaten alarm üretti; birleşik skor alarmı açılmadı."
 
 
 def combined_score(contributions: list[Decimal], p: Decimal) -> Decimal:
@@ -37,7 +39,7 @@ class CombinedScoreRule(RuleStrategy):
             "Aynı çalıştırmada bu müşteri için değerlendirilen kuralların skorlarını topla (R17 ve R18 hariç).",
             "Her kural için katkıyı hesapla: u = ağırlık × skor.",
             "A = (Σ u^p)^(1/p) değerini hesapla ve 1 ile sınırla.",
-            "A alarm eşiğini geçerse alarm aç.",
+            "A alarm eşiğini geçerse alarm aç; alarm açan kurallardan biri zaten alarm ürettiyse açma.",
         ),
         alert_mode="ALERT",
         parameter_model=R18Values,
@@ -48,6 +50,7 @@ class CombinedScoreRule(RuleStrategy):
         analyst_review_notes=(
             "Runs after every other rule in the same detection run and uses the rule weights captured for that run.",
             "A is capped at 1 because alert scores are stored in [0, 1].",
+            "No combined alert opens when an alert-mode rule already scored 0.5 or more for the customer in the same run; the stored score is then 0 and A stays in the calculation trace.",
         ),
         feasibility="HIGH",
         feasibility_reason="Uses the scores already computed in the same run.",
@@ -88,6 +91,16 @@ class CombinedScoreRule(RuleStrategy):
                     for tx in result.transactions:
                         evidence[tx.transaction_id] = tx
             score = combined_score([Decimal(item["u"]) for item in contributions], p)
+            # A customer who already gets an alert from a single rule in this run
+            # is not given a second, duplicate alert by the combined score.
+            # Signal rules (S1, S2) never open alerts, so they are not checked.
+            alerting_rules = [
+                result.rule_code
+                for result in sorted(by_customer.get(customer.customer_id, []), key=lambda r: r.rule_code)
+                if result.alert_mode == "ALERT"
+                and result.score >= (result.alert_threshold or SINGLE_RULE_ALERT_SCORE)
+            ]
+            suppressed = bool(alerting_rules)
             top = sorted(
                 (item for item in contributions if Decimal(item["u"]) > 0),
                 key=lambda item: Decimal(item["u"]),
@@ -111,12 +124,24 @@ class CombinedScoreRule(RuleStrategy):
                             "A": str(score),
                             "top_rules": ", ".join(f"{item['rule_code']} ({item['u']})" for item in top),
                         }},
-                        {"step": 4, "text": self.definition.steps[3], "status": "completed", "details": {
+                        {"step": 4, "text": self.definition.steps[3], "status": (
+                            "blocked" if suppressed else "completed"
+                        ), "details": {
                             "alert_threshold": str(values["alert_threshold"]),
-                            "score": str(score),
+                            "score": str(Decimal("0.0000") if suppressed else score),
+                            **(
+                                {
+                                    "single_rule_alerts": ", ".join(alerting_rules),
+                                    "note": SUPPRESSED_NOTE,
+                                }
+                                if suppressed
+                                else {}
+                            ),
                         }},
                     ],
-                    score_override=score,
+                    # The stored score is 0 when suppressed so that no alert opens;
+                    # A stays visible as raw_x and in step 3.
+                    score_override=Decimal("0.0000") if suppressed else score,
                 )
             )
         return output

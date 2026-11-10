@@ -50,6 +50,27 @@ class CurrencyLimits(RuleParameterValues):
         return value
 
 
+class MinimumAmountParameters(RuleParameterValues):
+    """Optional minimum amount per currency; absent means no minimum.
+
+    Optional so that parameter sets saved before the setting existed stay valid.
+    """
+
+    limits: dict[str, Decimal] | None = None
+
+    @field_validator("limits", mode="before")
+    @classmethod
+    def reject_boolean_minimums(cls, value: Any) -> Any:
+        return CurrencyLimits.reject_boolean_limits(value)
+
+    @field_validator("limits")
+    @classmethod
+    def validate_minimums(
+        cls, value: dict[str, Decimal] | None
+    ) -> dict[str, Decimal] | None:
+        return None if value is None else CurrencyLimits.validate_limits(value)
+
+
 class CountScoreParameters(RuleParameterValues):
     x_esik: Decimal = Field(ge=0)
     x_kesin: Decimal = Field(gt=0)
@@ -171,11 +192,11 @@ class CashAccountParameters(RuleParameterValues):
         return value
 
 
-class R04Values(CountScoreParameters, WindowParameters):
+class R04Values(MinimumAmountParameters, CountScoreParameters, WindowParameters):
     pass
 
 
-class R05Values(CountScoreParameters):
+class R05Values(MinimumAmountParameters, CountScoreParameters):
     history_days: int = Field(gt=0)
     kappa: Decimal = Field(ge=0)
     mad_floor: Decimal = Field(gt=0)
@@ -207,6 +228,22 @@ class R06Values(CountScoreParameters):
     history_weeks: int = Field(gt=0)
     min_count: int = Field(gt=0)
     season_factor: dict[date, Decimal] = Field(default_factory=dict)
+    # Optional variance floor: variance >= mean + mean^2 / k (negative binomial).
+    dispersion_k: Decimal | None = Field(default=None, gt=0)
+
+    @field_validator("dispersion_k", mode="before")
+    @classmethod
+    def reject_boolean_dispersion(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("dispersion_k must be a positive number.")
+        return value
+
+    @field_validator("dispersion_k")
+    @classmethod
+    def validate_finite_dispersion(cls, value: Decimal | None) -> Decimal | None:
+        if value is not None and not value.is_finite():
+            raise ValueError("dispersion_k must be finite.")
+        return value
 
     @field_validator("history_weeks", "min_count", mode="before")
     @classmethod
@@ -330,7 +367,12 @@ class R12Values(CountScoreParameters, WindowParameters, CashAccountParameters):
         return value
 
 
-class R13Values(IntegerCountScoreParameters, WindowParameters, CashAccountParameters):
+class R13Values(
+    MinimumAmountParameters,
+    IntegerCountScoreParameters,
+    WindowParameters,
+    CashAccountParameters,
+):
     max_step_hours: int = Field(gt=0)
     decay_low: Decimal = Field(gt=0, lt=1)
     decay_high: Decimal = Field(gt=0, lt=1)
@@ -364,7 +406,12 @@ class R13Values(IntegerCountScoreParameters, WindowParameters, CashAccountParame
         return self
 
 
-class R14Values(IntegerCountScoreParameters, WindowParameters, CashAccountParameters):
+class R14Values(
+    MinimumAmountParameters,
+    IntegerCountScoreParameters,
+    WindowParameters,
+    CashAccountParameters,
+):
     max_cycle_length: int = Field(ge=3, le=20)
     min_retained: Decimal = Field(ge=0, le=1)
     pingpong_tolerance: Decimal = Field(ge=0)
@@ -573,7 +620,8 @@ def validate_rule_parameters(
             typed_values = values_model.model_validate(parameter_set.values)
             normalized[customer_type] = {
                 "status": parameter_set.status,
-                "values": typed_values.model_dump(mode="json"),
+                # Unset optional settings are left out instead of stored as null.
+                "values": typed_values.model_dump(mode="json", exclude_none=True),
             }
         except (ValidationError, TypeError, ValueError) as exc:
             raise ValueError(

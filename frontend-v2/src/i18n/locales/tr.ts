@@ -494,10 +494,10 @@ const tr = {
     summaries: {
       R01: 'Son {window_days} günde limitin hemen altında {x} işlem; toplamı {band_total} {currency}.',
       R02: 'Bugün {amount} tutarında işlem; limit {limit}.',
-      R03: 'Son {window_days} günde aynı hesaba limitin altında {x} nakit yatırma.',
+      R03: 'Son {window_days} günde müşterinin hesaplarına limitin altında {x} nakit yatırma.',
       R04: 'Son {window_days} günde giden {outgoing_try_total}, gelen {incoming_try_total} TRY; büyük olan aylık gelirin {x} katı.',
       R05: 'Bugünkü bir işlem, müşterinin olağan tutarından {maximum_z} kat “normal oynama” uzakta.',
-      R06: 'Bu hafta {current_week_count} işlem; haftalık beklenen {lambda}. Şans eseri olma olasılığı {tail_probability}.',
+      R06: 'Son 7 günde {current_week_count} işlem; haftalık beklenen {lambda}. Şans eseri olma olasılığı {tail_probability}.',
       R07: 'Hesap {dormant_gap_days} gün hareketsizdi; bu dönemde {total} {currency} hareket (eşik {reference_limit}).',
       R08: 'Son {account_age_days} gün içinde açılan hesapta {total_volume} {currency} hacim (eşik {reference_limit}).',
       R09: 'Nakit payı önceki dönemde %{baseline_cash_share_pct}, son {window_days} günde %{current_cash_share_pct}.',

@@ -1,6 +1,8 @@
 import math
 from datetime import datetime, time, timedelta
+from decimal import Decimal
 from statistics import median
+from typing import Any
 
 from backend.detection.metadata import ParameterSpec
 
@@ -14,6 +16,22 @@ def calendar_window_start(as_of: datetime, days: int) -> datetime:
 
 def prior_day_start(as_of: datetime, days: int) -> datetime:
     return datetime.combine(as_of.date() - timedelta(days=days), time.min)
+
+
+def minimum_amounts(values: dict[str, Any]) -> dict[str, Decimal] | None:
+    """The optional per-currency minimum amount ("limits"); None = no minimum."""
+    limits = values.get("limits")
+    if not limits:
+        return None
+    return {currency: Decimal(str(limit)) for currency, limit in limits.items()}
+
+
+def meets_minimum(transaction: Any, minimums: dict[str, Decimal] | None) -> bool:
+    """False below the minimum of its currency, or when the currency is not listed."""
+    if minimums is None:
+        return True
+    minimum = minimums.get(transaction.currency)
+    return minimum is not None and transaction.amount >= minimum
 
 
 def median_and_mad(values: list[float]) -> tuple[float, float]:

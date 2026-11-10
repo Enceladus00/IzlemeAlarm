@@ -19,7 +19,7 @@ class LargeSingleTransactionRule(RuleStrategy):
         name="Büyük tek işlem - Limiti aşan işlem",
         description="Müşteri tipi ve para birimi limitini aşan işlemleri analist uyarısı olarak kaydeder.",
         steps=(
-            "Müşteri tipine ve para birimine göre limiti L seç.",
+            "Müşteri tipine ve para birimine göre limiti L seç; müşterinin kendi hesapları arasındaki transferleri sayma.",
             "Tutar >= L ise s = 1, değilse s = 0.",
             "Eşik üstü işlemleri kanıt olarak bağla ve analist uyarısı oluştur.",
         ),
@@ -53,6 +53,9 @@ class LargeSingleTransactionRule(RuleStrategy):
                 transaction.sender_account.customer_id,
                 transaction.receiver_account.customer_id,
             }
+            if len(customer_ids) == 1:
+                # Transfer between the customer's own accounts: not a large transaction.
+                continue
             for customer_id in customer_ids:
                 grouped[customer_id].append(transaction)
 

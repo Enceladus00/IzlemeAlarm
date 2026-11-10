@@ -1,12 +1,12 @@
 import math
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from statistics import fmean, pvariance
 from typing import Any
 
 from backend.detection.metadata import ParameterSpec, RawRuleResult, RuleDefinition, RuleStrategy
 from backend.detection.parameters import R06Values
-from backend.detection.rules.common import distribution_survival
+from backend.detection.rules.common import calendar_window_start, distribution_survival
 from backend.models import Customer, Transaction
 
 
@@ -14,19 +14,20 @@ class VelocityIncreaseRule(RuleStrategy):
     definition = RuleDefinition(
         code="R06",
         name="Hız artışı",
-        description="Bu haftaki transfer sayısını önceki haftalık sayımlardan türetilen Poisson/negatif binom dağılımıyla karşılaştırır.",
+        description="Son 7 gündeki transfer sayısını önceki 7 günlük dilimlerin sayımlarından türetilen Poisson/negatif binom dağılımıyla karşılaştırır.",
         steps=(
-            "Bu haftanın ve önceki tam haftaların müşteri işlem sayılarını hesapla.",
-            "Geçmiş haftalardan ortalama ve varyansı; varsa mevsim katsayısıyla hesapla.",
+            "Son 7 günün (bugün dahil) ve ondan önceki 7'şer günlük dilimlerin müşteri işlem sayılarını hesapla.",
+            "Geçmiş dilimlerden ortalama ve varyansı; varsa mevsim katsayısı ve dalgalanma tabanıyla hesapla.",
             "Poisson veya negatif binom üst-kuyruk olasılığını bul.",
             "−log10(p) değerini sigmoid ile puanla.",
         ),
         alert_mode="ALERT",
         parameter_model=R06Values,
         parameters=(
-            ParameterSpec("history_weeks", "integer", "weeks", "Number of complete prior weeks used as baseline.", True),
-            ParameterSpec("min_count", "integer", "transactions", "Minimum current-week count before scoring.", True),
-            ParameterSpec("season_factor", "date-to-decimal map", "date:factor", "Optional week-ending dates and positive count multipliers.", False),
+            ParameterSpec("history_weeks", "integer", "weeks", "Number of prior 7-day slices used as baseline.", True),
+            ParameterSpec("min_count", "integer", "transactions", "Minimum count in the last 7 days before scoring.", True),
+            ParameterSpec("season_factor", "date-to-decimal map", "date:factor", "Optional dates and positive count multipliers; a factor applies while its date is within the last 7 days.", False),
+            ParameterSpec("dispersion_k", "decimal", "dispersion", "Optional variance floor: variance >= mean + mean^2 / k. Empty = no floor.", False),
             ParameterSpec("x_esik", "decimal", "-log10 probability", "Score anchor at 0.5.", True),
             ParameterSpec("x_kesin", "decimal", "-log10 probability", "Score anchor at 0.9.", True),
         ),
@@ -50,10 +51,10 @@ class VelocityIncreaseRule(RuleStrategy):
         results = []
         for customer in customers:
             values = parameter_sets[customer.customer_type]["values"]
-            week_start = datetime.combine(
-                as_of.date() - timedelta(days=as_of.date().weekday()),
-                time.min,
-            )
+            # "This week" is the last 7 calendar days including the run date, so
+            # the rule sees the same amount of activity on every weekday. The
+            # history is the 7-day slices before that.
+            week_start = calendar_window_start(as_of, 7)
             all_weekly_counts: list[int] = []
             for week_index in range(int(values["history_weeks"]), 0, -1):
                 start = week_start - timedelta(days=7 * week_index)
@@ -86,12 +87,33 @@ class VelocityIncreaseRule(RuleStrategy):
             n = len(current_transactions)
             lam = fmean(all_weekly_counts) if all_weekly_counts else 0.0
             variance = pvariance(all_weekly_counts) if all_weekly_counts else 0.0
-            week_end = (week_start + timedelta(days=6)).date()
-            seasonal_factors = values["season_factor"]
-            factor = float(seasonal_factors.get(week_end.isoformat(), 1))
+            week_end = as_of.date()
+            # A season factor applies while its date is inside the 7-day window.
+            window_dates = {
+                (week_start.date() + timedelta(days=offset)).isoformat()
+                for offset in range(7)
+            }
+            factor = max(
+                (
+                    float(value)
+                    for key, value in values["season_factor"].items()
+                    if key in window_dates
+                ),
+                default=1.0,
+            )
             lam *= factor
             if lam == 0:
                 lam = 0.5
+            history_variance = variance
+            dispersion_k = values.get("dispersion_k")
+            variance_floor = (
+                lam + lam * lam / float(dispersion_k)
+                if dispersion_k is not None
+                else None
+            )
+            floor_applied = variance_floor is not None and variance < variance_floor
+            if floor_applied:
+                variance = variance_floor
             p = (
                 distribution_survival(n, lam, variance)
                 if n >= int(values["min_count"])
@@ -114,6 +136,12 @@ class VelocityIncreaseRule(RuleStrategy):
                         {"step": 2, "text": self.definition.steps[1], "status": "completed", "details": {
                             "lambda": lam,
                             "variance": variance,
+                            "history_variance": history_variance,
+                            "dispersion_k": (
+                                str(dispersion_k) if dispersion_k is not None else None
+                            ),
+                            "variance_floor": variance_floor,
+                            "variance_floor_applied": floor_applied,
                             "season_factor": factor,
                             "week_ending": week_end.isoformat(),
                         }},

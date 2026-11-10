@@ -495,10 +495,10 @@ const en: Translation = {
     summaries: {
       R01: '{x} transactions just under the limit in the last {window_days} days; total {band_total} {currency}.',
       R02: 'A transaction of {amount} today; limit {limit}.',
-      R03: '{x} cash deposits under the limit into the same account in the last {window_days} days.',
+      R03: '{x} cash deposits under the limit into the customer’s accounts in the last {window_days} days.',
       R04: 'Outgoing {outgoing_try_total}, incoming {incoming_try_total} TRY in the last {window_days} days; the larger is {x} times the monthly income.',
       R05: 'A transaction today is {maximum_z} “normal swings” away from the customer’s usual amount.',
-      R06: '{current_week_count} transactions this week; expected {lambda} per week. Probability by chance: {tail_probability}.',
+      R06: '{current_week_count} transactions in the last 7 days; expected {lambda} per week. Probability by chance: {tail_probability}.',
       R07: 'The account was idle for {dormant_gap_days} days; {total} {currency} moved in this period (threshold {reference_limit}).',
       R08: '{total_volume} {currency} volume on an account opened within {account_age_days} days (threshold {reference_limit}).',
       R09: 'Cash share was {baseline_cash_share_pct}% before and {current_cash_share_pct}% in the last {window_days} days.',

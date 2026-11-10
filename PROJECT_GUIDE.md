@@ -402,25 +402,25 @@ snapshotted, the explanation stays correct even after the rule is changed.
 | Code | Name | Mode | Idea in one line |
 | --- | --- | --- | --- |
 | R01 | Bölme (structuring) | Alert | Several outgoing transfers just below the limit. |
-| R02 | Büyük tek işlem | Alert | One transaction at or above the limit (binary). |
-| R03 | Çok sayıda nakit yatırma | Alert | Repeated below-limit cash deposits into one account. |
-| R04 | Gelir-hacim uyumsuzluğu | Alert | Recent volume far above monthly income. |
-| R05 | Olağandışı tutar | Alert | Amount unusual against own history and income peers (robust z). |
-| R06 | Hız artışı | Alert | This week's count improbably high against prior weeks. |
+| R02 | Büyük tek işlem | Alert | One transaction at or above the limit (binary); transfers between the customer's own accounts are not counted. |
+| R03 | Çok sayıda nakit yatırma | Alert | Repeated below-limit cash deposits, counted across all of the customer's accounts. |
+| R04 | Gelir-hacim uyumsuzluğu | Alert | Recent volume far above monthly income; optional minimum volume (`limits`). |
+| R05 | Olağandışı tutar | Alert | Amount unusual against own history and income peers (robust z); optional minimum amount (`limits`). |
+| R06 | Hız artışı | Alert | Count of the last 7 days improbably high against the earlier 7-day slices; optional variance floor (`dispersion_k`). |
 | R07 | Uyuyan hesap uyanması | Alert | High activity after a dormant period. |
 | R08 | Yeni hesapta yüksek hareket | Alert | High volume on a recently opened account. |
 | R09 | Nakit yoğunluğu | Alert | Cash share rising against the previous period. |
 | R10 | Geçiş hesabı | Alert | Money in, quickly out to new recipients. |
 | R11 | Para toplama (fan-in) | Alert | Many new senders. |
 | R12 | Dağıtma (fan-out) | Alert | Many new recipients, similar amounts. |
-| R13 | Katmanlama zinciri | Alert | Fast chain of transfers, each slightly smaller. |
-| R14 | Döngü ve ping-pong | Alert | Money returns to its start, or goes back and forth. |
+| R13 | Katmanlama zinciri | Alert | Fast chain of transfers, each slightly smaller; optional minimum amount of the first transfer (`limits`). |
+| R14 | Döngü ve ping-pong | Alert | Money returns to its start, or goes back and forth; optional minimum amount of the first / forward transfer (`limits`). |
 | R15 | Şüpheli hesapla temas | Alert | Direct or one-step contact with a confirmed-suspicious customer. |
 | R16 | Listelenmiş ülke | Alert | Volume with listed (high-risk) countries. |
 | S1 | Yuvarlak tutar | Signal only | Share of big outgoing transfers that are round amounts. |
 | S2 | Merkez hesap | Signal only | Far more counterparties than peers of the same type. |
 | R17 | Çoklu uyarı | Severity raise | Open alerts from ≥ `min_rules` different rules raise their severity one step (once per alert). No score. |
-| R18 | Birleşik risk skoru | Alert | `A = min(1, (Σ (weight·score)^p)^(1/p))` over this run's scores; alert when `A ≥ alert_threshold`. |
+| R18 | Birleşik risk skoru | Alert | `A = min(1, (Σ (weight·score)^p)^(1/p))` over this run's scores; alert when `A ≥ alert_threshold`, unless an alert-mode rule already scored ≥ 0.5 for the customer in the same run (no duplicate alert; stored score 0, `A` stays in the trace). |
 
 Each rule's file in `backend/detection/rules/` holds its exact steps,
 parameters and analyst review notes; the rules screen shows the same
@@ -553,8 +553,8 @@ activity designed to trigger the rule.
   alert history is created for it.
 
 Passing scenarios show that a rule can fire, not that its thresholds are
-right. The demo customers trigger many rules at once, so R18 alerts on most of
-them.
+right. Most demo customers already get an alert from a single rule, so R18
+opens its own alert only where no single rule does (the S1 customer).
 
 ## 12. The interfaces
 

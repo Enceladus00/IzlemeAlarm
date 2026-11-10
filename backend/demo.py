@@ -177,7 +177,7 @@ DEMO_RULE_OVERRIDES = {
             "limits": {"TRY": "2000"},
             "round_unit": "1000",
             "min_count": 3,
-            "window_days": 7,
+            "window_days": 30,
             "x_esik": "0.5",
             "x_kesin": "0.9",
         }
@@ -220,7 +220,7 @@ DEMO_SCENARIOS = (
         "R03",
         "DEMO-003",
         "DEMO-ACC-003",
-        "Three below-limit cash deposits into one account.",
+        "Three below-limit cash deposits to one customer.",
     ),
     (
         "R04",
@@ -238,7 +238,7 @@ DEMO_SCENARIOS = (
         "R06",
         "DEMO-006",
         "DEMO-ACC-006",
-        "Current-week activity spike after four quiet baseline weeks.",
+        "Activity spike in the last 7 days after four quiet baseline weeks.",
     ),
     (
         "R07",
@@ -322,7 +322,7 @@ DEMO_SCENARIOS = (
         "R18",
         "DEMO-026",
         "DEMO-ACC-026",
-        "Combined score includes the signal-only S1 result and opens an alert.",
+        "No single rule alerts; the combined score with the signal-only S1 result opens an alert.",
     ),
 )
 
@@ -384,9 +384,8 @@ def _scenario_transactions(as_of: datetime) -> list[ScenarioTransaction]:
             )
     add("D-R05-001", 19, 5, "50000", recent(hours=1))
 
-    week_start = datetime.combine(
-        as_of.date() - timedelta(days=as_of.date().weekday()), time.min
-    )
+    # R06 compares the last 7 days (run date included) with earlier 7-day slices.
+    week_start = datetime.combine(as_of.date() - timedelta(days=6), time.min)
     for week_index in range(1, 5):
         add(
             f"D-R06-H{week_index:02d}",
@@ -441,11 +440,13 @@ def _scenario_transactions(as_of: datetime) -> list[ScenarioTransaction]:
     add("D-R16-002", 25, 28, "6000", recent(days=1), country="IR")
 
     # S1 (signal only) -> R18: big outgoing transfers that are all round amounts.
+    # Spread over four weeks: no alert-mode rule may reach 0.5 for this customer
+    # (a velocity spike would), otherwise R18 leaves the alert to that rule.
     for suffix, amount, days in (
-        ("001", "2000", 4),
-        ("002", "3000", 3),
-        ("003", "4000", 2),
-        ("004", "5000", 1),
+        ("001", "2000", 25),
+        ("002", "3000", 18),
+        ("003", "4000", 11),
+        ("004", "5000", 4),
     ):
         add(f"D-S1-{suffix}", 26, 28, amount, recent(days=days))
 

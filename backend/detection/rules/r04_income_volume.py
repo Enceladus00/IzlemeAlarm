@@ -5,7 +5,7 @@ from typing import Any
 
 from backend.detection.metadata import ParameterSpec, RawRuleResult, RuleDefinition, RuleStrategy
 from backend.detection.parameters import R04Values
-from backend.detection.rules.common import calendar_window_start
+from backend.detection.rules.common import calendar_window_start, minimum_amounts
 from backend.models import Customer, Transaction
 
 
@@ -18,12 +18,14 @@ class IncomeVolumeRule(RuleStrategy):
             "Gelir ve ayarlı takvim-günü penceresini belirle.",
             "Müşterinin dışarı giden ve gelen TRY toplamlarını hesapla.",
             "x = max(outgoing, incoming) / monthly_income.",
+            "Asgari hacim kontrolü: max(outgoing, incoming) asgari aylık hacmin altındaysa skor 0.",
             "Sigmoid skoru hesapla; eksik veya sıfır gelirde skoru engelle.",
         ),
         alert_mode="ALERT",
         parameter_model=R04Values,
         parameters=(
             ParameterSpec("window_days", "integer", "days", "Calendar-day lookback including run date.", True),
+            ParameterSpec("limits", "map[currency, decimal]", "currency", "Optional minimum period volume (TRY); below it the score is 0.", False),
             *(
                 ParameterSpec(name, "decimal", "ratio", f"Score anchor {name}.", True)
                 for name in ("x_esik", "x_kesin")
@@ -82,7 +84,12 @@ class IncomeVolumeRule(RuleStrategy):
             outgoing, incoming = by_customer[customer.customer_id]
             income = customer.monthly_income
             valid_income = income is not None and income > 0
-            x = max(outgoing, incoming) / income if valid_income else Decimal("0")
+            volume = max(outgoing, incoming)
+            x = volume / income if valid_income else Decimal("0")
+            # The rule only reads TRY, so only the TRY minimum applies.
+            minimum_volume = (minimum_amounts(values) or {}).get("TRY")
+            below_minimum = minimum_volume is not None and volume < minimum_volume
+            suppress = not valid_income or below_minimum
             results.append(
                 RawRuleResult(
                     customer_id=customer.customer_id,
@@ -103,15 +110,24 @@ class IncomeVolumeRule(RuleStrategy):
                             "x": str(x),
                         }},
                         {"step": 4, "text": self.definition.steps[3], "status": (
-                            "pending_shared_scoring" if valid_income else "blocked"
+                            "blocked" if below_minimum else "completed"
+                        ), "details": {
+                            "volume": str(volume),
+                            "minimum_volume": (
+                                str(minimum_volume) if minimum_volume is not None else None
+                            ),
+                            "minimum_volume_met": not below_minimum,
+                        }},
+                        {"step": 5, "text": self.definition.steps[4], "status": (
+                            "blocked" if suppress else "pending_shared_scoring"
                         ), "details": {
                             "analyst_review_required": not valid_income,
-                            "score_forced_to_zero": not valid_income,
+                            "score_forced_to_zero": suppress,
                         }},
                     ],
                     x_esik=Decimal(str(values["x_esik"])),
                     x_kesin=Decimal(str(values["x_kesin"])),
-                    force_zero=not valid_income,
+                    force_zero=suppress,
                 )
             )
         return results

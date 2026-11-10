@@ -5,7 +5,11 @@ from typing import Any
 
 from backend.detection.metadata import ParameterSpec, RawRuleResult, RuleDefinition, RuleStrategy
 from backend.detection.parameters import R13Values
-from backend.detection.rules.common import calendar_window_start
+from backend.detection.rules.common import (
+    calendar_window_start,
+    meets_minimum,
+    minimum_amounts,
+)
 from backend.models import Customer, Transaction
 
 
@@ -28,6 +32,7 @@ class LayeringChainRule(RuleStrategy):
             ParameterSpec("decay_high", "decimal", "ratio", "Inclusive maximum next-amount / prior-amount ratio.", True),
             ParameterSpec("max_depth", "integer", "transactions", "Maximum transaction count in a chain; capped at 20.", True),
             ParameterSpec("cash_accounts", "account ID list", "account_id", "Accounts excluded as cash/custody nodes.", False),
+            ParameterSpec("limits", "map[currency, decimal]", "currency", "Optional minimum amount of a chain's first transaction; other currencies start no chain.", False),
             ParameterSpec("x_esik", "integer", "chain length", "Score anchor at 0.5.", True),
             ParameterSpec("x_kesin", "integer", "chain length", "Score anchor at 0.9.", True),
         ),
@@ -109,7 +114,11 @@ class LayeringChainRule(RuleStrategy):
                         visited_accounts | {candidate.receiver_account_id},
                     )
 
-        for transaction in eligible:
+        # A chain may only start with a transaction at or above the minimum
+        # amount; this also keeps the network search small.
+        minimums = minimum_amounts(values)
+        chain_starts = [tx for tx in eligible if meets_minimum(tx, minimums)]
+        for transaction in chain_starts:
             walk(
                 [transaction],
                 {transaction.sender_account_id, transaction.receiver_account_id},
@@ -138,6 +147,12 @@ class LayeringChainRule(RuleStrategy):
                             "decay_low": str(decay_low),
                             "decay_high": str(decay_high),
                             "max_depth": max_depth,
+                            "minimum_amounts": (
+                                {currency: str(amount) for currency, amount in minimums.items()}
+                                if minimums is not None
+                                else None
+                            ),
+                            "chain_start_transaction_count": len(chain_starts),
                         }},
                         {"step": 3, "text": self.definition.steps[2], "status": (
                             "blocked" if suppress else "pending_shared_scoring"

@@ -141,8 +141,10 @@ def test_r18_combines_the_runs_scores_and_runs_after_signals():
     evaluation = DetectionEngine().evaluate([me, other], transactions, rules(active), as_of=AS_OF)
     combined = next(r for r in evaluation.results if r.rule_code == "R18" and r.customer_id == 1)
     r16 = next(r for r in evaluation.results if r.rule_code == "R16" and r.customer_id == 1)
-    assert combined.score == r16.score  # one contributor with weight 1: A = u
+    assert combined.raw_x == r16.score  # one contributor with weight 1: A = u
+    assert combined.score == Decimal("0")  # R16 already alerts: no second alert
     assert combined.alert_threshold == Decimal("0.5")
+    assert evaluation.summary["rules"]["R18"]["alerts"] == 0
     last = combined.step_trace[-2]["details"]
     assert last["A"] == str(r16.score) and last["top_rules"].startswith("R16")
     contributions = combined.step_trace[1]["details"]["contributions"]

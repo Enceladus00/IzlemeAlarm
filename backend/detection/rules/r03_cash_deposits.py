@@ -16,10 +16,10 @@ from backend.models import Customer, Transaction
 class CashDepositsRule(RuleStrategy):
     definition = RuleDefinition(
         code="R03",
-        name="Çok sayıda nakit yatırma - Aynı hesaba eşik altı nakit yatırma",
-        description="Aynı müşteriye ait aynı hesaba gelen eşik altı nakit işlemlerini ayarlanabilir gün penceresinde sayar.",
+        name="Çok sayıda nakit yatırma - Müşteriye eşik altı nakit yatırma",
+        description="Müşterinin bütün hesaplarına gelen eşik altı nakit işlemlerini ayarlanabilir gün penceresinde sayar.",
         steps=(
-            "Ayarlı gün penceresinde hesaba gelen nakit işlemleri al (channel).",
+            "Ayarlı gün penceresinde müşterinin bütün hesaplarına gelen nakit işlemleri al (channel).",
             "Tutarı L'nin altında olanları say -> x.",
             "s = sigmoid((x - x_esik) / c).",
         ),
@@ -34,11 +34,11 @@ class CashDepositsRule(RuleStrategy):
         ),
         analyst_review_notes=(
             "Cash-channel classification is institution-owned; confirm selected channels before approving this rule.",
-            "Counts are conservatively kept separate by account and currency, and transfers between the same customer's accounts are excluded. An analyst should confirm whether the intended policy aggregates across a customer's accounts.",
+            "Counts are aggregated across all of the customer's accounts and kept separate by currency; transfers between the same customer's accounts are excluded.",
             "Daily deduplication consolidates same-day R03 results into one alert, accumulates evidence, and keeps the highest score. An analyst should confirm whether distinct same-day episodes should instead create separate alerts.",
         ),
         feasibility="MEDIUM",
-        feasibility_reason="Required transaction fields exist, but cash-channel classification and account/currency aggregation need analyst approval.",
+        feasibility_reason="Required transaction fields exist, but cash-channel classification needs analyst approval.",
     )
 
     def evaluate_raw(
@@ -66,7 +66,9 @@ class CashDepositsRule(RuleStrategy):
             for customer in customers
         }
         customer_by_id = {customer.customer_id: customer for customer in customers}
-        grouped: dict[tuple[int, int, str], list[Transaction]] = defaultdict(list)
+        # Grouped by customer, not by account: deposits spread over the
+        # customer's own accounts are counted together.
+        grouped: dict[tuple[int, str], list[Transaction]] = defaultdict(list)
         ignored_currency_counts: dict[int, int] = defaultdict(int)
         for transaction in transactions:
             receiver_customer_id = transaction.receiver_account.customer_id
@@ -90,13 +92,7 @@ class CashDepositsRule(RuleStrategy):
                 and transaction.currency not in parameter_values["limits"]
             ):
                 ignored_currency_counts[owner.customer_id] += 1
-            grouped[
-                (
-                    owner.customer_id,
-                    transaction.receiver_account_id,
-                    transaction.currency,
-                )
-            ].append(transaction)
+            grouped[(owner.customer_id, transaction.currency)].append(transaction)
 
         results: list[RawRuleResult] = []
         for customer in customers:
@@ -107,10 +103,8 @@ class CashDepositsRule(RuleStrategy):
                 currency: Decimal(str(limit))
                 for currency, limit in values["limits"].items()
             }
-            candidates: list[
-                tuple[Decimal, list[Transaction], int, Decimal, str]
-            ] = []
-            for (customer_id, account_id, currency), account_transactions in grouped.items():
+            candidates: list[tuple[Decimal, list[Transaction], Decimal, str]] = []
+            for (customer_id, currency), account_transactions in grouped.items():
                 if (
                     customer_id != customer.customer_id
                     or currency not in limits
@@ -123,14 +117,14 @@ class CashDepositsRule(RuleStrategy):
                     if transaction.channel in cash_channels and transaction.amount < limit
                 ]
                 candidates.append(
-                    (Decimal(len(below_limit)), below_limit, account_id, limit, currency)
+                    (Decimal(len(below_limit)), below_limit, limit, currency)
                 )
 
             if candidates:
                 selected = max(
-                    candidates, key=lambda candidate: (candidate[0], candidate[2])
+                    candidates, key=lambda candidate: (candidate[0], candidate[3])
                 )
-                raw_x, _, account_id, limit, currency = selected
+                raw_x, _, limit, currency = selected
                 evidence = [
                     transaction
                     for candidate in candidates
@@ -138,13 +132,10 @@ class CashDepositsRule(RuleStrategy):
                     for transaction in candidate[1]
                 ]
             else:
-                raw_x, evidence, account_id, limit, currency = (
-                    Decimal("0"),
-                    [],
-                    None,
-                    None,
-                    None,
-                )
+                raw_x, evidence, limit, currency = Decimal("0"), [], None, None
+            account_ids = sorted(
+                {transaction.receiver_account_id for transaction in evidence}
+            )
             trace = [
                 {
                     "step": 1,
@@ -157,7 +148,7 @@ class CashDepositsRule(RuleStrategy):
                         "window_days": window_days_by_customer[customer.customer_id],
                         "as_of": as_of.isoformat(),
                         "cash_channels": sorted(cash_channels),
-                        "matching_account_count": len(candidates),
+                        "matching_currency_count": len(candidates),
                         "unlisted_currency_transaction_count": ignored_currency_counts[
                             customer.customer_id
                         ],
@@ -168,7 +159,7 @@ class CashDepositsRule(RuleStrategy):
                     "text": self.definition.steps[1],
                     "status": "completed",
                     "details": {
-                        "account_id": account_id,
+                        "account_ids": account_ids,
                         "currency": currency,
                         "limit": str(limit) if limit is not None else None,
                         "x": int(raw_x),
