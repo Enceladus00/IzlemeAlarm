@@ -1008,6 +1008,8 @@ const en: Translation = {
       'Invalid or expired authentication token.': 'Invalid or expired authentication token.',
       'Incorrect username or password.': 'Incorrect username or password.',
       'Too many requests. Please try again later.': 'Too many requests. Please try again later.',
+      'Too many sign-ins in progress. Please try again shortly.': 'Too many sign-ins in progress. Please try again shortly.',
+      'Request body is too large.': 'Request body is too large.',
       'Database unavailable.': 'Database unavailable.',
       'date_from must not be after date_to.': 'date_from must not be after date_to.',
       'Invalid account reference.': 'The account reference is not valid.',

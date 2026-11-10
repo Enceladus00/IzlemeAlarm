@@ -307,9 +307,12 @@ decision form, the history (with who did what) and the customer's other alerts.
   Login: 5 failures per account + address and 30 per address in 15 minutes,
   checked before the password; the first refusal of a block writes one
   `LOGIN_RATE_LIMITED` audit row. Per user: 300 requests a minute overall,
-  10 uploads, 10 demo seeds and 20 rule evaluations an hour. Counters live in
-  memory, so they reset on restart, and running several tasks needs shared
-  storage first.
+  10 uploads, 10 demo seeds and 20 rule evaluations an hour. Requests without
+  a valid login: 120 a minute per address (`backend/request_guards.py`).
+  Counters live in memory, so they reset on restart, and running several tasks
+  needs shared storage first.
+- **Request guards:** bodies over 1 MB (6 MB for `/uploads`) get 413, and at
+  most 4 logins are checked at once; further ones get 503 with `Retry-After`.
 - **Every view of a customer's personal data writes a `customer.viewed` audit
   row** (BDDK information-systems regulation, article 13). Repeat views of the
   same customer by the same user within 30 minutes are not logged again. If the

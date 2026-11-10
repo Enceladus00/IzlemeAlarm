@@ -4,7 +4,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
-from backend.rate_limit import GENERAL_RATE, limiter
+from backend.rate_limit import GENERAL_RATE, TOO_MANY_REQUESTS_DETAIL, limiter
 from backend.repositories.audit_repository import AuditLogRepository
 from backend.repositories.auth_repository import SqlAlchemyAuthRepository
 from backend.repositories.alert_repository import SqlAlchemyAlertRepository
@@ -49,7 +49,7 @@ def get_audit_service(db: Session = Depends(get_db)) -> AuditService:
 def too_many_requests(retry_after: int) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        detail="Too many requests. Please try again later.",
+        detail=TOO_MANY_REQUESTS_DETAIL,
         headers={"Retry-After": str(retry_after)},
     )
 

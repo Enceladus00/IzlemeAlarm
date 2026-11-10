@@ -1007,6 +1007,8 @@ const tr = {
       'Invalid or expired authentication token.': 'Oturumunuz sona erdi, lütfen tekrar giriş yapın.',
       'Incorrect username or password.': 'Kullanıcı adı veya parola hatalı.',
       'Too many requests. Please try again later.': 'Çok fazla istek gönderildi. Lütfen biraz sonra yeniden deneyin.',
+      'Too many sign-ins in progress. Please try again shortly.': 'Şu anda çok fazla oturum açma işlemi var. Lütfen kısa süre sonra yeniden deneyin.',
+      'Request body is too large.': 'Gönderilen veri izin verilen boyutu aşıyor.',
       'Database unavailable.': 'Sunucuya bağlanılamadı. Birkaç saniye sonra tekrar deneyin.',
       'date_from must not be after date_to.': 'Başlangıç tarihi bitiş tarihinden sonra olamaz.',
       'Invalid account reference.': 'Hesap referansı geçersiz.',

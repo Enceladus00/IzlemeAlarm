@@ -7,6 +7,7 @@ from backend.rate_limit import (
     client_address,
     login_not_checked,
     login_succeeded,
+    password_checks,
 )
 from backend.security import ACCESS_TOKEN_MINUTES
 from backend.services.auth_service import AuthenticatedUser, AuthService
@@ -27,11 +28,20 @@ def login(
         if block.first_rejection:
             service.record_login_blocked(block.scope, address)
         raise too_many_requests(block.retry_after)
+    if not password_checks.acquire(blocking=False):
+        login_not_checked(address, form.username)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Too many sign-ins in progress. Please try again shortly.",
+            headers={"Retry-After": "5"},
+        )
     try:
         token = service.login(form.username, form.password)
     except Exception:
         login_not_checked(address, form.username)
         raise
+    finally:
+        password_checks.release()
     if token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

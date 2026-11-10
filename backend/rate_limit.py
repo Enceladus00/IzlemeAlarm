@@ -29,6 +29,16 @@ UPLOAD_RATE = (10, 60 * 60)
 DEMO_SEED_RATE = (10, 60 * 60)
 RULE_EVALUATION_RATE = (20, 60 * 60)
 
+# Requests without a valid login, per address. Also covers load balancer health
+# checks, which come from its own addresses and stay far below this.
+ANONYMOUS_ADDRESS_RATE = (120, 60)
+
+# bcrypt is heavy on a 256 CPU task; further logins are turned away rather than
+# queued, so that a burst from many addresses cannot starve the rest of the API.
+MAX_CONCURRENT_PASSWORD_CHECKS = 4
+
+TOO_MANY_REQUESTS_DETAIL = "Too many requests. Please try again later."
+
 # Bounds memory if someone tries to create endless counters.
 MAX_TRACKED_KEYS = 50_000
 
@@ -107,6 +117,7 @@ class SlidingWindowLimiter:
 
 
 limiter = SlidingWindowLimiter()
+password_checks = threading.BoundedSemaphore(MAX_CONCURRENT_PASSWORD_CHECKS)
 
 
 def _valid_address(value: str | None) -> str | None:

@@ -7,13 +7,18 @@ from starlette.requests import Request
 from backend.api.dependencies import get_auth_service, get_detection_service
 from backend.main import create_app
 from backend.rate_limit import (
+    ANONYMOUS_ADDRESS_RATE,
     GENERAL_RATE,
     LOGIN_ADDRESS_LIMIT,
     LOGIN_PAIR_LIMIT,
+    MAX_CONCURRENT_PASSWORD_CHECKS,
     RULE_EVALUATION_RATE,
     SlidingWindowLimiter,
     client_address,
+    password_checks,
 )
+from backend.request_guards import MAX_BODY_BYTES, MAX_UPLOAD_BODY_BYTES
+from backend.security import create_access_token
 from backend.services.auth_service import AuthenticatedUser
 
 
@@ -113,7 +118,8 @@ class FakeAuth:
 
 
 @pytest.fixture
-def api():
+def api(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET", "rate-limit-tests-secret-that-is-long-enough")
     app = create_app()
     auth = FakeAuth()
     app.dependency_overrides[get_auth_service] = lambda: auth
@@ -175,9 +181,13 @@ def test_a_broken_password_check_is_not_counted(api):
     assert _login(client, password="right").status_code == 200
 
 
+def _signed_in() -> dict[str, str]:
+    return {"Authorization": f"Bearer {create_access_token(1)}"}
+
+
 def test_every_authenticated_endpoint_has_the_general_cap(api):
     client, _ = api
-    headers = {"Authorization": "Bearer t"}
+    headers = _signed_in()
     limit = GENERAL_RATE[0]
     assert all(client.get("/auth/me", headers=headers).status_code == 200 for _ in range(limit))
     response = client.get("/auth/me", headers=headers)
@@ -186,8 +196,63 @@ def test_every_authenticated_endpoint_has_the_general_cap(api):
 
 def test_costly_endpoint_has_its_own_limit(api):
     client, _ = api
-    headers = {"Authorization": "Bearer t"}
+    headers = _signed_in()
     limit = RULE_EVALUATION_RATE[0]
     assert all(client.post("/rules/evaluate", headers=headers).status_code == 200 for _ in range(limit))
     assert client.post("/rules/evaluate", headers=headers).status_code == 429
     assert client.get("/auth/me", headers=headers).status_code == 200
+
+
+def test_requests_without_a_valid_login_are_capped_per_address(api):
+    client, _ = api
+    limit = ANONYMOUS_ADDRESS_RATE[0]
+    caller = {"X-Forwarded-For": "198.51.100.1"}
+    assert all(client.get("/auth/me", headers=caller).status_code == 401 for _ in range(limit))
+    response = client.get("/auth/me", headers=caller)
+    assert response.status_code == 429 and int(response.headers["Retry-After"]) > 0
+    # A forged token is still anonymous; another address and a real login are not affected.
+    forged = client.get("/auth/me", headers={**caller, "Authorization": "Bearer forged"})
+    assert forged.status_code == 429
+    assert client.get("/auth/me", headers={"X-Forwarded-For": "203.0.113.7"}).status_code == 401
+    assert client.get("/auth/me", headers={**caller, **_signed_in()}).status_code == 200
+
+
+def test_oversized_body_is_refused_before_login_runs(api):
+    client, auth = api
+    body = b"x" * (MAX_BODY_BYTES + 1)
+    form = {"Content-Type": "application/x-www-form-urlencoded"}
+    declared = client.post("/auth/login", content=body, headers=form)
+    assert declared.status_code == 413
+
+    def chunks():
+        yield body[: MAX_BODY_BYTES // 2]
+        yield body[MAX_BODY_BYTES // 2 :]
+
+    undeclared = client.post("/auth/login", content=chunks(), headers=form)
+    assert undeclared.status_code == 413
+    assert auth.checked == 0
+
+
+def test_uploads_may_be_larger_than_other_requests(api):
+    client, _ = api
+    headers = {"Content-Type": "text/csv"}
+    allowed = client.post("/uploads", content=b"x" * (MAX_BODY_BYTES + 1), headers=headers)
+    assert allowed.status_code != 413
+    too_big = client.post("/uploads", content=b"x" * (MAX_UPLOAD_BODY_BYTES + 1), headers=headers)
+    assert too_big.status_code == 413
+
+
+def test_login_is_turned_away_while_every_password_slot_is_busy(api):
+    client, auth = api
+    for _ in range(MAX_CONCURRENT_PASSWORD_CHECKS):
+        assert password_checks.acquire(blocking=False)
+    try:
+        attempts = [_login(client) for _ in range(LOGIN_PAIR_LIMIT + 2)]
+    finally:
+        for _ in range(MAX_CONCURRENT_PASSWORD_CHECKS):
+            password_checks.release()
+    assert {response.status_code for response in attempts} == {503}
+    assert attempts[0].headers["Retry-After"] == "5"
+    assert auth.checked == 0
+    # Being turned away is not a failed guess, and the slots come back.
+    assert _login(client, password="right").status_code == 200

@@ -15,6 +15,7 @@ from backend.api.routes.rules import router as rules_router
 from backend.api.routes.transactions import router as transactions_router
 from backend.api.routes.uploads import router as uploads_router
 from backend.api.routes.users import router as users_router
+from backend.request_guards import AnonymousAddressCapMiddleware, BodySizeLimitMiddleware
 from backend.security import get_jwt_secret
 
 
@@ -33,6 +34,9 @@ def create_app() -> FastAPI:
         version="0.2.0",
         lifespan=lifespan,
     )
+    # The middleware added last runs first.
+    application.add_middleware(BodySizeLimitMiddleware)
+    application.add_middleware(AnonymousAddressCapMiddleware)
     application.include_router(auth_router)
     application.include_router(audit_router)
     application.include_router(analysis_router)
