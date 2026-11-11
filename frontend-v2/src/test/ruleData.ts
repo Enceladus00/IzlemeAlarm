@@ -74,6 +74,7 @@ export const ruleFixtures: Rule[] = [
       p('history_weeks', 'integer', 'weeks'),
       p('min_count', 'integer', 'transactions'),
       p('season_factor', 'date-to-decimal map', 'date:factor', false),
+      p('dispersion_k', 'decimal', 'dispersion', false),
       p('x_esik', 'decimal', '-log10 probability'),
       p('x_kesin', 'decimal', '-log10 probability'),
     ]),

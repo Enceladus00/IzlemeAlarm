@@ -216,3 +216,42 @@ describe('K5 reason, K11 copy and the new rules', () => {
     expect(buildRuleUpdate(s1, draftS1).errors['BIREYSEL.x_kesin']).toEqual({ key: 'max', max: 1 });
   });
 });
+
+describe('optional parameters', () => {
+  /** R06 with Bireysel filled in; dispersion_k is optional. */
+  function r06(dispersion: string): RuleDraft {
+    return withType(reasoned(ruleByCode('R06')), 'BIREYSEL', {
+      status: 'PROVISIONAL',
+      numbers: { history_weeks: '12', min_count: '5', x_esik: '3', x_kesin: '5', dispersion_k: dispersion },
+    });
+  }
+
+  it('omits an empty optional number instead of rejecting the save', () => {
+    const { errors, payload } = buildRuleUpdate(ruleByCode('R06'), r06(''));
+    expect(errors).toEqual({});
+    expect(payload?.thresholds.BIREYSEL.values).not.toHaveProperty('dispersion_k');
+  });
+
+  it('still validates an optional number that is filled in', () => {
+    expect(buildRuleUpdate(ruleByCode('R06'), r06('16')).payload?.thresholds.BIREYSEL.values.dispersion_k).toBe(16);
+    expect(buildRuleUpdate(ruleByCode('R06'), r06('0')).errors['BIREYSEL.dispersion_k']).toEqual({ key: 'min', min: 0.000001 });
+  });
+
+  it('omits empty optional limits but keeps required limits required', () => {
+    const required = ruleByCode('R02');
+    const optional: Rule = {
+      ...required,
+      metadata: {
+        ...required.metadata!,
+        parameters: required.metadata!.parameters.map((item) => ({ ...item, required: false })),
+      },
+    };
+    const empty = withType(reasoned(required), 'BIREYSEL', { limits: [{ currency: '', amount: '' }] });
+
+    const saved = buildRuleUpdate(optional, empty);
+    expect(saved.errors).toEqual({});
+    expect(saved.payload?.thresholds.BIREYSEL.values).toEqual({});
+
+    expect(buildRuleUpdate(required, empty).errors['BIREYSEL.limits']).toEqual({ key: 'limitsRequired' });
+  });
+});

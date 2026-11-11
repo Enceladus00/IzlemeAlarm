@@ -759,6 +759,7 @@ const tr = {
     statusShort: { UNSET: 'UNSET', PROVISIONAL: 'GEÇİCİ', APPROVED: 'ONAYLI' },
     unsetNotice: 'Parametreler girilene kadar bu müşteri türü atlanır.',
     limitsTitle: 'Para birimine göre referans tutarlar',
+    optional: 'isteğe bağlı',
     limitsHint: 'Her satıra bir para birimi kodu ve referans tutarı girin. Kullanılmayan satırları boş bırakın; kur dönüşümü uygulanmaz.',
     currencyCode: 'Para birimi',
     referenceAmount: 'Referans tutar',

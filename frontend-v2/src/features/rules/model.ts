@@ -44,7 +44,13 @@ export const BOUNDS: Record<string, [number | null, number | null]> = {
   min_rules: [2, null],
   p: [1, null],
   alert_threshold: [0.000001, 1],
+  dispersion_k: [0.000001, null],
 };
+
+/** False only when the API marks the parameter optional (missing = required). */
+export function isRequired(parameters: RuleParameter[], name: string): boolean {
+  return parameters.find((parameter) => parameter.name === name)?.required ?? true;
+}
 
 /** Rules whose x_esik / x_kesin are shares between 0 and 1. */
 export const RATIO_ANCHOR_RULES = new Set(['S1']);
@@ -253,8 +259,10 @@ function buildTypeValues(
         limits[currency] = amount;
       }
     });
-    if (!invalid && Object.keys(limits).length === 0) fail('limits', { key: 'limitsRequired' });
-    values.limits = limits;
+    const empty = Object.keys(limits).length === 0;
+    // An optional minimum amount left empty is omitted: the rule has no minimum.
+    if (!invalid && empty && isRequired(parameters, 'limits')) fail('limits', { key: 'limitsRequired' });
+    if (!empty || isRequired(parameters, 'limits')) values.limits = limits;
   }
 
   if (names.has('window_days')) {
@@ -348,6 +356,8 @@ function buildTypeValues(
 
   for (const parameter of parameters) {
     if (SPECIAL_NAMES.has(parameter.name)) continue;
+    // An optional setting left empty is omitted (e.g. R06 dispersion_k).
+    if (!parameter.required && (draft.numbers[parameter.name] ?? '').trim() === '') continue;
     const [min, max] = BOUNDS[parameter.name] ?? [null, null];
     const { value, error } = checkNumber(draft.numbers[parameter.name] ?? '', { min, max, integer: parameter.type === 'integer' });
     if (error) fail(parameter.name, error);

@@ -12,6 +12,7 @@ import {
   OPEN_STATUSES,
   SPECIAL_NAMES,
   hasParam,
+  isRequired,
   integerAnchors,
   type DraftErrors,
   type TypeDraft,
@@ -83,7 +84,10 @@ export function ParameterFields({
     <div className="space-y-4">
       {hasParam(parameters, 'limits') && (
         <fieldset className="space-y-2">
-          <legend className="text-[13px] font-semibold">{t('rules.limitsTitle')}</legend>
+          <legend className="text-[13px] font-semibold">
+            {t('rules.limitsTitle')}
+            {!isRequired(parameters, 'limits') && <span className="font-normal text-muted"> · {t('rules.optional')}</span>}
+          </legend>
           <p className="text-xs text-muted">{t('rules.limitsHint')}</p>
           {draft.limits.map((row, index) => {
             const rowError = err(`limits.${index}`);
@@ -342,6 +346,7 @@ export function ParameterFields({
               label={
                 <>
                   <span className="font-mono">{parameter.name}</span> <span className="font-normal text-muted">({parameter.unit})</span>
+                  {!parameter.required && <span className="font-normal text-muted"> · {t('rules.optional')}</span>}
                 </>
               }
               hint={parameter.meaning}

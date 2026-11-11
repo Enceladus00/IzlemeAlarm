@@ -760,6 +760,7 @@ const en: Translation = {
     statusShort: { UNSET: 'UNSET', PROVISIONAL: 'PROVISIONAL', APPROVED: 'APPROVED' },
     unsetNotice: 'This customer type will be skipped until parameters are provided.',
     limitsTitle: 'Reference amounts by currency',
+    optional: 'optional',
     limitsHint: 'Enter one currency code and its reference amount per row. Leave unused rows empty; no currency conversion is applied.',
     currencyCode: 'Currency',
     referenceAmount: 'Reference amount',
