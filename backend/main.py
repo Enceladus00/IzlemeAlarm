@@ -16,6 +16,7 @@ from backend.api.routes.transactions import router as transactions_router
 from backend.api.routes.uploads import router as uploads_router
 from backend.api.routes.users import router as users_router
 from backend.request_guards import AnonymousAddressCapMiddleware, BodySizeLimitMiddleware
+from backend.scheduler import start_scheduler_from_env
 from backend.security import get_jwt_secret
 
 
@@ -26,7 +27,12 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
         get_jwt_secret()
-        yield
+        scheduler = start_scheduler_from_env()
+        try:
+            yield
+        finally:
+            if scheduler is not None:
+                scheduler.stop()
 
     application = FastAPI(
         title="İşlem İzleme ve Alarm Sistemi",

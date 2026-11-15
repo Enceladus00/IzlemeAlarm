@@ -41,6 +41,7 @@ class DetectionService:
         rule_overrides: dict[str, dict[str, Any]] | None = None,
         transaction_customer_ids: set[int] | None = None,
         suspicious_customer_ids: set[int] | None = None,
+        trigger: str | None = None,
     ) -> int:
         return self._evaluate(
             actor_id=actor_id,
@@ -50,6 +51,7 @@ class DetectionService:
             rule_overrides=rule_overrides,
             transaction_customer_ids=transaction_customer_ids,
             suspicious_customer_ids=suspicious_customer_ids,
+            trigger=trigger,
         ).created_alerts
 
     def evaluate_detailed(
@@ -62,6 +64,7 @@ class DetectionService:
         rule_overrides: dict[str, dict[str, Any]] | None = None,
         transaction_customer_ids: set[int] | None = None,
         suspicious_customer_ids: set[int] | None = None,
+        trigger: str | None = None,
     ) -> DetectionRunOutcome:
         return self._evaluate(
             actor_id=actor_id,
@@ -71,6 +74,7 @@ class DetectionService:
             rule_overrides=rule_overrides,
             transaction_customer_ids=transaction_customer_ids,
             suspicious_customer_ids=suspicious_customer_ids,
+            trigger=trigger,
         )
 
     def _evaluate(
@@ -83,6 +87,7 @@ class DetectionService:
         rule_overrides: dict[str, dict[str, Any]] | None,
         transaction_customer_ids: set[int] | None,
         suspicious_customer_ids: set[int] | None,
+        trigger: str | None,
     ) -> DetectionRunOutcome:
         started_at = datetime.now()
         run_as_of = as_of or datetime.now()
@@ -127,6 +132,7 @@ class DetectionService:
             actor_id=actor_id,
             automatic=automatic,
             started_at=started_at,
+            trigger=trigger,
         )
         logger.info("Detection run completed: %s", evaluation.summary)
         return DetectionRunOutcome(run_id, created, evaluation)

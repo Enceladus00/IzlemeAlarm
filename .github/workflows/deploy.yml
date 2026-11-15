@@ -108,7 +108,8 @@ jobs:
           environment-variables: |
             [
               {"name": "PORT", "value": "8000"},
-              {"name": "ENABLE_DEMO_ENDPOINTS", "value": "${{ vars.ENABLE_DEMO_ENDPOINTS }}"}
+              {"name": "ENABLE_DEMO_ENDPOINTS", "value": "${{ vars.ENABLE_DEMO_ENDPOINTS }}"},
+              {"name": "DETECTION_SCHEDULE_TIME", "value": "${{ vars.DETECTION_SCHEDULE_TIME }}"}
             ]
           secrets: |
             [

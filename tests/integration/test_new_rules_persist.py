@@ -118,3 +118,34 @@ def test_r18_respects_its_own_alert_threshold(session, factory):
         alert_threshold=Decimal("0.8"),
     )
     assert _persist(session, [result]) == 0
+
+
+def test_a_scheduled_run_without_a_user_is_audited_as_a_system_event(session):
+    run_id = uuid4()
+    SqlAlchemyDetectionRepository(session).persist_run(
+        run_id,
+        datetime(2026, 11, 4, 2, 0),
+        DetectionEvaluation(results=[], summary={"rules": {}}),
+        _rules(session),
+        automatic=True,
+        trigger="scheduled",
+    )
+    event = session.scalars(
+        select(AuditLog).where(AuditLog.details["run_id"].astext == str(run_id))
+    ).one()
+    assert event.actor_id is None
+    assert event.action == "detection.auto_run"
+    assert event.details["trigger"] == "scheduled"
+
+
+def test_a_run_without_user_or_trigger_writes_no_audit_event(session):
+    run_id = uuid4()
+    SqlAlchemyDetectionRepository(session).persist_run(
+        run_id,
+        datetime(2026, 11, 4, 2, 0),
+        DetectionEvaluation(results=[], summary={"rules": {}}),
+        _rules(session),
+    )
+    assert session.scalars(
+        select(AuditLog).where(AuditLog.details["run_id"].astext == str(run_id))
+    ).first() is None

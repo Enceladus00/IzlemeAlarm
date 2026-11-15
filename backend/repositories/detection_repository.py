@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select, text, tuple_
@@ -316,6 +317,7 @@ class SqlAlchemyDetectionRepository:
         actor_id: int | None = None,
         automatic: bool = False,
         started_at: datetime | None = None,
+        trigger: str | None = None,
     ) -> int:
         run_started_at = started_at or datetime.now()
         run = DetectionRun(
@@ -389,18 +391,22 @@ class SqlAlchemyDetectionRepository:
         evaluation.summary["created_alerts"] = created
         run_summary = dict(evaluation.summary)
         run.summary = run_summary
-        if actor_id is not None:
+        # A run started by nobody (the scheduler) is still audited, as a system event.
+        if actor_id is not None or trigger is not None:
+            details: dict[str, Any] = {
+                "run_id": str(run_id),
+                "created_alerts": created,
+                "automatic": automatic,
+                "summary": run_summary,
+            }
+            if trigger is not None:
+                details["trigger"] = trigger
             self._session.add(
                 AuditLog(
                     actor_id=actor_id,
                     action="detection.auto_run" if automatic else "detection.run",
                     entity_type="detection",
-                    details={
-                        "run_id": str(run_id),
-                        "created_alerts": created,
-                        "automatic": automatic,
-                        "summary": run_summary,
-                    },
+                    details=details,
                 )
             )
         completed_at = datetime.now()
